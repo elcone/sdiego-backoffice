@@ -169,3 +169,49 @@ class FeeConfiguration(TimestampedModel):
 
     def __str__(self):
         return f"{self.valid_from} to {self.valid_until or 'ongoing'}"
+
+
+class BankTransaction(TimestampedModel):
+    bank_account = models.CharField(max_length=30)
+    bank_receipt = models.CharField(max_length=100)
+    line_type = models.CharField(max_length=10, choices=[
+        ("CREDIT", "Credit"), ("DEBIT", "Debit"),
+        ("COMMISSION", "Commission"), ("VAT", "VAT"),
+    ])
+    transaction_date = models.DateField()
+    transaction_time = models.TimeField(help_text="Local bank wall time; no timezone conversion.")
+    description = models.TextField()
+    amount = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        help_text="Signed amount: positive for credits, negative for debits.",
+    )
+    transaction_code = models.CharField(
+        max_length=255,
+        unique=True,
+        help_text="Original external reconciliation reference; not the matching identity.",
+    )
+    source_identifiers = models.JSONField()
+    source_values = models.JSONField(
+        help_text="Original column names and unmodified source values."
+    )
+    source_file = models.CharField(max_length=255)
+    source_file_sha256 = models.CharField(max_length=64)
+    source_row_number = models.PositiveIntegerField(validators=[MinValueValidator(1)])
+
+    class Meta:
+        ordering = ["-transaction_date", "pk"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["bank_account", "bank_receipt", "line_type"],
+                name="unique_bank_account_receipt_line_type",
+            ),
+            models.CheckConstraint(
+                condition=(models.Q(line_type="CREDIT", amount__gt=0)
+                           | models.Q(line_type__in=["DEBIT", "COMMISSION", "VAT"], amount__lt=0)),
+                name="bank_amount_matches_line_type",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.transaction_date} — {self.amount:+.2f} — {self.description}"

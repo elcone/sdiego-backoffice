@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from .models import (
+    BankTransaction,
     ChargeConcept,
     Contact,
     FeeConfiguration,
@@ -85,3 +86,40 @@ class FeeConfigurationAdmin(admin.ModelAdmin):
     ]
     list_filter = ["valid_from", "valid_until"]
     date_hierarchy = "valid_from"
+
+
+@admin.register(BankTransaction)
+class BankTransactionAdmin(admin.ModelAdmin):
+    list_display = [
+        "transaction_date",
+        "description",
+        "amount",
+        "transaction_code",
+        "source_file",
+    ]
+    list_filter = ["transaction_date", "line_type", "bank_account", "source_file"]
+    search_fields = ["description", "transaction_code", "bank_receipt", "source_identifiers"]
+    date_hierarchy = "transaction_date"
+    readonly_fields = [
+        "bank_account", "bank_receipt", "line_type", "transaction_time",
+        "transaction_date",
+        "description",
+        "amount",
+        "transaction_code",
+        "source_identifiers",
+        "source_values",
+        "source_file",
+        "source_file_sha256",
+        "source_row_number",
+        "created_at",
+        "updated_at",
+    ]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
