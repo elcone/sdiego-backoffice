@@ -226,3 +226,60 @@ class BankTransaction(TimestampedModel):
 
     def __str__(self):
         return f"{self.transaction_date} — {self.amount:+.2f} — {self.description}"
+
+
+HISTORICAL_EXCLUDED_CHARGE_IDS = (
+    'N-51296e66ae61daf5', 'N-7e8fd26c167b3239', 'N-b0adcb0b1736cdcb',
+)
+
+
+class Charge(HistoricalReference):
+    """Frozen historical obligation; amounts are independent of fee configuration."""
+    source_id = models.CharField('Charge ID', max_length=255, unique=True, editable=False)
+    house = models.ForeignKey(House, on_delete=models.PROTECT, related_name='charges')
+    concept = models.ForeignKey(ChargeConcept, on_delete=models.PROTECT, related_name='charges')
+    effective_date = models.DateField(db_index=True)
+    period = models.CharField(max_length=7)
+    nominal_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    discount_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    original_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    source_status = models.CharField(max_length=20)
+    revision_version = models.PositiveIntegerField()
+    revision_updated = models.DateTimeField(null=True, blank=True)
+    reference = models.TextField(blank=True)
+    detail = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['effective_date', 'source_id']
+        constraints = [
+            models.CheckConstraint(condition=~models.Q(source_id=''), name='charge_source_id_nonempty'),
+            models.CheckConstraint(condition=~models.Q(source_id__in=HISTORICAL_EXCLUDED_CHARGE_IDS), name='charge_not_historical_exclusion'),
+            models.CheckConstraint(condition=models.Q(nominal_amount__gte=0, discount_amount__gte=0, original_amount__gte=0), name='historical_charge_amounts_nonnegative'),
+            models.CheckConstraint(condition=models.Q(discount_amount__lte=models.F('nominal_amount')), name='charge_discount_within_nominal'),
+            models.CheckConstraint(condition=models.Q(amount=models.F('nominal_amount') - models.F('discount_amount')), name='charge_amount_matches_discount'),
+            models.CheckConstraint(condition=models.Q(period__regex=r'^[0-9]{4}-(0[1-9]|1[0-2])$'), name='charge_period_valid_month'),
+            models.CheckConstraint(condition=models.Q(source_status__in=['ORIGINAL', 'APROBADO']), name='charge_source_status_valid'),
+        ]
+
+    def __str__(self):
+        return f'{self.source_id} — {self.house} — {self.amount:.2f}'
+
+
+class ChargeExclusion(HistoricalReference):
+    """Audit evidence only. This model has no charge amount or financial effect."""
+    source_id = models.CharField('Excluded charge ID', max_length=255, unique=True, editable=False)
+    house = models.ForeignKey(House, on_delete=models.PROTECT, related_name='charge_exclusions')
+    reason = models.TextField()
+    revision_version = models.PositiveIntegerField()
+    revision_updated = models.DateTimeField()
+    evidence_ids = models.JSONField()
+
+    class Meta:
+        ordering = ['source_id']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(source_id__in=HISTORICAL_EXCLUDED_CHARGE_IDS), name='charge_exclusion_approved_id'),
+        ]
+
+    def __str__(self):
+        return self.source_id

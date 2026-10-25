@@ -2,6 +2,8 @@ from django.contrib import admin
 
 from .models import (
     BankTransaction,
+    Charge,
+    ChargeExclusion,
     ChargeConcept,
     Contact,
     FeeConfiguration,
@@ -34,11 +36,26 @@ class PayerAccountInline(admin.TabularInline):
     extra = 0
 
 
+class ChargeInline(admin.TabularInline):
+    model = Charge
+    extra = 0
+    fields = ['source_id', 'concept', 'effective_date', 'period', 'amount']
+    readonly_fields = fields
+    show_change_link = True
+    can_delete = False
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(House)
 class HouseAdmin(admin.ModelAdmin):
     list_display = ["number"]
     search_fields = ["number"]
-    inlines = [HouseContactInline]
+    inlines = [HouseContactInline, ChargeInline]
 
 
 @admin.register(Contact)
@@ -123,3 +140,35 @@ class BankTransactionAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+class HistoricalChargeAdmin(admin.ModelAdmin):
+    """Only view permissions apply, including for users granted change permissions."""
+    def get_readonly_fields(self, request, obj=None):
+        return [field.name for field in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Charge)
+class ChargeAdmin(HistoricalChargeAdmin):
+    list_display = ['source_id', 'house', 'concept', 'effective_date', 'period', 'amount', 'original_amount']
+    list_filter = ['concept', 'effective_date', 'source_status']
+    search_fields = ['source_id', 'house__number', 'reference', 'detail']
+    list_select_related = ['house', 'concept']
+    date_hierarchy = 'effective_date'
+
+
+@admin.register(ChargeExclusion)
+class ChargeExclusionAdmin(HistoricalChargeAdmin):
+    list_display = ['source_id', 'house', 'reason', 'revision_updated']
+    list_filter = ['revision_updated']
+    search_fields = ['source_id', 'house__number', 'reason', 'evidence_ids']
+    list_select_related = ['house']
