@@ -283,3 +283,132 @@ class ChargeExclusion(HistoricalReference):
 
     def __str__(self):
         return self.source_id
+
+
+class Payment(HistoricalReference):
+    """Reviewed house assignment/effect, never a second bank movement."""
+    source_id = models.CharField('Payment ID', max_length=255, unique=True, editable=False)
+    house = models.ForeignKey(House, null=True, blank=True, on_delete=models.PROTECT, related_name='payments')
+    bank_transaction = models.OneToOneField(BankTransaction, null=True, blank=True, on_delete=models.PROTECT, related_name='reviewed_payment')
+    origin = models.CharField(max_length=30)
+    real_date = models.DateField()
+    effective_date = models.DateField(db_index=True)
+    amount = models.DecimalField(max_digits=18, decimal_places=2)
+    effective_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    assignment_approved = models.BooleanField()
+    source_status = models.CharField(max_length=20)
+    validation = models.CharField(max_length=30, blank=True)
+    blocked = models.TextField(blank=True)
+    approval_evidence = models.JSONField(default=dict, blank=True, editable=False)
+
+    class Meta:
+        ordering = ['effective_date', 'source_id']
+        constraints = [
+            models.CheckConstraint(condition=~models.Q(source_id=''), name='payment_source_id_nonempty'),
+            models.CheckConstraint(condition=models.Q(amount__gt=0), name='payment_amount_positive'),
+            models.CheckConstraint(condition=(models.Q(assignment_approved=True, house__isnull=False, blocked='', effective_amount=models.F('amount')) | models.Q(assignment_approved=False, effective_amount=0)), name='payment_effect_requires_approval'),
+            models.CheckConstraint(condition=(models.Q(origin__in=['BANCO_DIRECTO', 'duckdb'], bank_transaction__isnull=False) | models.Q(origin__in=['COMUNIDAD_FELIZ', 'ANTICIPO_ENERO'], bank_transaction__isnull=True)), name='payment_origin_bank_relationship'),
+            models.CheckConstraint(condition=(models.Q(assignment_approved=False) | models.Q(source_status='APROBADO') | models.Q(source_status='ORIGINAL', validation='CONFIRMADO')), name='payment_assignment_status_approved'),
+        ]
+
+    def __str__(self):
+        return self.source_id
+
+
+class CFPayment(HistoricalReference):
+    """Original CF evidence; Payment.effective_amount is the single financial effect."""
+    source_id = models.CharField('CF payment ID', max_length=255, unique=True, editable=False)
+    payment = models.OneToOneField(Payment, null=True, blank=True, on_delete=models.PROTECT, related_name='cf_record')
+    bank_transaction = models.ForeignKey(BankTransaction, null=True, blank=True, on_delete=models.PROTECT, related_name='cf_records')
+    original_house = models.ForeignKey(House, null=True, blank=True, on_delete=models.PROTECT, related_name='original_cf_records')
+    assigned_house = models.ForeignKey(House, null=True, blank=True, on_delete=models.PROTECT, related_name='assigned_cf_records')
+    official_folio = models.CharField(max_length=100, blank=True)
+    original_date = models.DateField()
+    effective_date = models.DateField(null=True, blank=True)
+    original_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    recognized_amount = models.DecimalField(max_digits=18, decimal_places=2)
+    additional_credit_amount = models.DecimalField(max_digits=18, decimal_places=2, help_text='Source reconciliation evidence only; do not sum with Payment.effective_amount.')
+    treatment = models.CharField(max_length=40)
+    recognition = models.CharField(max_length=40)
+    settlement = models.CharField(max_length=40)
+
+    class Meta:
+        ordering = ['source_id']
+        constraints = [
+            models.CheckConstraint(condition=~models.Q(source_id=''), name='cf_payment_source_id_nonempty'),
+            models.UniqueConstraint(fields=['official_folio'], condition=~models.Q(official_folio=''), name='cf_official_folio_unique'),
+            models.CheckConstraint(condition=models.Q(original_amount__gte=0, recognized_amount__gte=0, additional_credit_amount__gte=0, additional_credit_amount__lte=models.F('recognized_amount')), name='cf_amounts_valid'),
+            models.CheckConstraint(condition=(models.Q(treatment='PRIOR_CLOSURE_NOT_APPLIED', payment__isnull=True, recognized_amount=0, additional_credit_amount=0, effective_date__isnull=True, bank_transaction__isnull=True) | models.Q(treatment='BANK_DIRECT_ALREADY_REPRESENTED', payment__isnull=False, bank_transaction__isnull=False, additional_credit_amount=0, effective_date__isnull=False) | models.Q(treatment__in=['CF_GROUP_RECOGNIZED', 'JANUARY_ADVANCE', 'RECONSTRUCTED_USER_CONFIRMED'], payment__isnull=False, assigned_house__isnull=False, effective_date__isnull=False, additional_credit_amount=models.F('recognized_amount'), recognized_amount__gt=0)), name='cf_treatment_financial_shape'),
+        ]
+
+    def __str__(self):
+        return self.source_id
+
+
+class CFReconciliationGroup(HistoricalReference):
+    source_id = models.CharField('Group code', max_length=30, unique=True, editable=False)
+    payment_count = models.PositiveIntegerField()
+    deposit_count = models.PositiveIntegerField()
+    payment_total = models.DecimalField(max_digits=18, decimal_places=2)
+    bank_total = models.DecimalField(max_digits=18, decimal_places=2)
+    difference = models.DecimalField(max_digits=18, decimal_places=2)
+    status = models.CharField(max_length=50)
+    evidence_level = models.CharField(max_length=60)
+
+    class Meta:
+        ordering = ['source_id']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(payment_total__gte=0, bank_total__gte=0, difference=models.F('bank_total') - models.F('payment_total')), name='cf_group_totals_consistent'),
+        ]
+
+    def __str__(self):
+        return self.source_id
+
+
+class CFGroupPayment(HistoricalReference):
+    group = models.ForeignKey(CFReconciliationGroup, on_delete=models.PROTECT, related_name='payment_links')
+    cf_payment = models.OneToOneField(CFPayment, on_delete=models.PROTECT, related_name='group_link')
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['group', 'cf_payment'], name='cf_group_payment_unique')]
+
+
+class CFGroupDeposit(HistoricalReference):
+    group = models.ForeignKey(CFReconciliationGroup, on_delete=models.PROTECT, related_name='deposit_links')
+    bank_transaction = models.OneToOneField(BankTransaction, on_delete=models.PROTECT, related_name='cf_settlement')
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['group', 'bank_transaction'], name='cf_group_deposit_unique')]
+
+
+class ReceiptEvidence(HistoricalReference):
+    source_id = models.CharField('Evidence ID', max_length=255, unique=True, editable=False)
+    document_name = models.TextField()
+    sha256 = models.CharField(max_length=64)
+    archive_path = models.TextField()
+    filename_house = models.ForeignKey(House, null=True, blank=True, on_delete=models.PROTECT, related_name='receipt_evidence')
+    reviewed_payment = models.ForeignKey(Payment, null=True, blank=True, on_delete=models.PROTECT, related_name='catalog_evidence')
+    result = models.CharField(max_length=60)
+
+    def __str__(self):
+        return self.document_name
+
+
+class PaymentEvidenceLink(HistoricalReference):
+    payment = models.ForeignKey(Payment, on_delete=models.PROTECT, related_name='evidence_links')
+    evidence = models.ForeignKey(ReceiptEvidence, on_delete=models.PROTECT, related_name='payment_links')
+    link_kind = models.CharField(max_length=50)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['payment', 'evidence', 'link_kind'], name='payment_evidence_link_unique'),
+            models.CheckConstraint(condition=models.Q(link_kind__in=['APPROVED_LINK', 'CATALOG_ASSOCIATION_NOT_NEW_APPROVAL']), name='payment_evidence_link_kind_valid'),
+        ]
+
+
+class HistoricalHouseCase(HistoricalReference):
+    house = models.OneToOneField(House, on_delete=models.PROTECT, related_name='historical_case')
+    status = models.CharField(max_length=40)
+    note = models.TextField()
+    version = models.PositiveIntegerField()
+    source_updated = models.DateTimeField()

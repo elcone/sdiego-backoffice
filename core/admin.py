@@ -10,6 +10,14 @@ from .models import (
     House,
     HouseContact,
     PayerAccount,
+    Payment,
+    CFPayment,
+    CFReconciliationGroup,
+    CFGroupPayment,
+    CFGroupDeposit,
+    ReceiptEvidence,
+    PaymentEvidenceLink,
+    HistoricalHouseCase,
 )
 
 
@@ -172,3 +180,87 @@ class ChargeExclusionAdmin(HistoricalChargeAdmin):
     list_filter = ['revision_updated']
     search_fields = ['source_id', 'house__number', 'reason', 'evidence_ids']
     list_select_related = ['house']
+
+
+@admin.register(Payment)
+class PaymentAdmin(HistoricalChargeAdmin):
+    list_display = ['source_id', 'house', 'origin', 'effective_date', 'amount', 'effective_amount', 'assignment_approved']
+    list_filter = ['origin', 'assignment_approved', 'source_status', 'validation', 'effective_date']
+    search_fields = ['source_id', 'house__number', 'bank_transaction__bank_receipt']
+    list_select_related = ['house', 'bank_transaction']
+    date_hierarchy = 'effective_date'
+
+
+@admin.register(CFPayment)
+class CFPaymentAdmin(HistoricalChargeAdmin):
+    list_display = ['source_id', 'official_folio', 'assigned_house', 'original_amount', 'recognized_amount', 'additional_credit_amount', 'treatment', 'settlement']
+    list_filter = ['treatment', 'recognition', 'settlement']
+    search_fields = ['source_id', 'official_folio', 'assigned_house__number', 'payment__source_id']
+    list_select_related = ['assigned_house', 'payment', 'bank_transaction']
+
+
+class CFGroupPaymentInline(admin.TabularInline):
+    model = CFGroupPayment
+    fields = ['cf_payment']
+    readonly_fields = fields
+    extra = 0
+    can_delete = False
+    show_change_link = True
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+class CFGroupDepositInline(CFGroupPaymentInline):
+    model = CFGroupDeposit
+    fields = ['bank_transaction']
+    readonly_fields = fields
+
+
+@admin.register(CFReconciliationGroup)
+class CFReconciliationGroupAdmin(HistoricalChargeAdmin):
+    list_display = ['source_id', 'payment_count', 'deposit_count', 'payment_total', 'bank_total', 'difference', 'status']
+    search_fields = ['source_id']
+    list_filter = ['status', 'evidence_level']
+    inlines = [CFGroupPaymentInline, CFGroupDepositInline]
+
+
+@admin.register(CFGroupPayment)
+class CFGroupPaymentAdmin(HistoricalChargeAdmin):
+    list_display = ['group', 'cf_payment']
+    list_select_related = ['group', 'cf_payment']
+    search_fields = ['group__source_id', 'cf_payment__source_id']
+
+
+@admin.register(CFGroupDeposit)
+class CFGroupDepositAdmin(HistoricalChargeAdmin):
+    list_display = ['group', 'bank_transaction']
+    list_select_related = ['group', 'bank_transaction']
+    search_fields = ['group__source_id', 'bank_transaction__bank_receipt']
+
+
+@admin.register(ReceiptEvidence)
+class ReceiptEvidenceAdmin(HistoricalChargeAdmin):
+    list_display = ['source_id', 'document_name', 'filename_house', 'result', 'reviewed_payment']
+    list_filter = ['result']
+    search_fields = ['source_id', 'document_name', 'filename_house__number', 'sha256']
+    list_select_related = ['filename_house', 'reviewed_payment']
+
+
+@admin.register(PaymentEvidenceLink)
+class PaymentEvidenceLinkAdmin(HistoricalChargeAdmin):
+    list_display = ['payment', 'evidence', 'link_kind']
+    list_filter = ['link_kind']
+    list_select_related = ['payment', 'evidence']
+    search_fields = ['payment__source_id', 'evidence__source_id']
+
+
+@admin.register(HistoricalHouseCase)
+class HistoricalHouseCaseAdmin(HistoricalChargeAdmin):
+    list_display = ['house', 'status', 'version', 'source_updated']
+    list_filter = ['status']
+    list_select_related = ['house']
+    search_fields = ['house__number', 'note']
