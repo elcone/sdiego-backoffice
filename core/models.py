@@ -17,7 +17,18 @@ class TimestampedModel(models.Model):
         abstract = True
 
 
-class House(TimestampedModel):
+class HistoricalReference(TimestampedModel):
+    source_id = models.CharField(max_length=255, unique=True, null=True, blank=True, editable=False)
+    source_values = models.JSONField(default=dict, blank=True, editable=False)
+    source_file = models.CharField(max_length=255, blank=True, editable=False)
+    source_file_sha256 = models.CharField(max_length=64, blank=True, editable=False)
+    source_row_number = models.PositiveIntegerField(null=True, blank=True, editable=False)
+
+    class Meta:
+        abstract = True
+
+
+class House(HistoricalReference):
     number = models.CharField(max_length=30, unique=True)
 
     class Meta:
@@ -27,7 +38,7 @@ class House(TimestampedModel):
         return self.number
 
 
-class Contact(TimestampedModel):
+class Contact(HistoricalReference):
     name = models.CharField(max_length=200)
     rfc = models.CharField("RFC", max_length=13, blank=True)
     phone = models.CharField(max_length=50, blank=True)
@@ -40,7 +51,7 @@ class Contact(TimestampedModel):
         return self.name
 
 
-class HouseContact(TimestampedModel):
+class HouseContact(HistoricalReference):
     objects = HouseContactQuerySet.as_manager()
 
     house = models.ForeignKey(
@@ -49,7 +60,7 @@ class HouseContact(TimestampedModel):
     contact = models.ForeignKey(
         Contact, on_delete=models.CASCADE, related_name="house_contacts"
     )
-    is_responsible = models.BooleanField(default=False)
+    is_responsible = models.BooleanField(default=False, null=True, blank=True)
 
     class Meta:
         ordering = ["house__number", "contact__name", "pk"]
@@ -83,7 +94,7 @@ class PayerAccount(TimestampedModel):
         return f"{self.bank_name} — {self.account_number}"
 
 
-class ChargeConcept(TimestampedModel):
+class ChargeConcept(HistoricalReference):
     code = models.CharField(max_length=50, unique=True)
     name = models.CharField(max_length=150)
     description = models.TextField(blank=True)
