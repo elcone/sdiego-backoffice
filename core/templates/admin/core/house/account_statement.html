@@ -1,0 +1,45 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a> &rsaquo;
+  <a href="{{ house_list_url }}">Houses</a> &rsaquo;
+  <a href="{{ house_url }}">{{ house.number }}</a> &rsaquo; Account statement
+</div>
+{% endblock %}
+{% block content %}
+<form method="get">
+  {{ form.as_p }}
+  <button type="submit" class="button">Update statement</button>
+</form>
+{% if valid_cutoff %}
+<p>As of {{ as_of|date:"Y-m-d" }}. All amounts in MXN.</p>
+<div class="module">
+  <table>
+    <caption>Account summary</caption>
+    <tbody>
+      <tr><th scope="row">Total effective charges</th><td>{{ total_charges|floatformat:2 }}</td></tr>
+      <tr><th scope="row">Total effective payments</th><td>{{ total_payments|floatformat:2 }}</td></tr>
+      <tr><th scope="row">Balance</th><td><strong>{{ balance|floatformat:2 }}</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+<p>Negative balances show credit in favor of the house.</p>
+<div class="module">
+  <table>
+    <caption>Account statement</caption>
+    <thead><tr><th scope="col">Date</th><th scope="col">Type</th><th scope="col">Description</th><th scope="col">Charge</th><th scope="col">Payment</th><th scope="col">Running balance</th></tr></thead>
+    <tbody>
+    {% for row in rows %}
+      <tr>
+        <td>{{ row.date|date:"Y-m-d" }}</td><td>{{ row.transaction_type|capfirst }}</td><td>{{ row.description }}</td>
+        <td>{{ row.charge_amount|floatformat:2 }}</td><td>{{ row.payment_amount|floatformat:2 }}</td><td>{{ row.running_balance|floatformat:2 }}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="6">No effective movements through this date.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

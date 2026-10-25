@@ -1,4 +1,14 @@
+from django import forms
 from django.contrib import admin
+from django.contrib.admin.utils import quote, unquote
+from django.core.exceptions import PermissionDenied
+from django.http import Http404, HttpResponseNotAllowed
+from django.template.response import TemplateResponse
+from django.urls import path, reverse
+from django.utils import timezone
+from django.utils.html import format_html
+
+from .balances import ZERO, account_statement, house_balances
 
 from .models import (
     BankTransaction,
@@ -64,6 +74,72 @@ class HouseAdmin(admin.ModelAdmin):
     list_display = ["number"]
     search_fields = ["number"]
     inlines = [HouseContactInline, ChargeInline]
+    change_form_template = 'admin/core/house/change_form.html'
+
+    def has_financial_permission(self, request, obj=None):
+        return self.has_view_or_change_permission(request, obj) and all(
+            request.user.has_perm(f'core.view_{model}') or request.user.has_perm(f'core.change_{model}')
+            for model in ['charge', 'payment']
+        )
+
+    def get_queryset(self, request):
+        queryset = super().get_queryset(request)
+        return house_balances(queryset) if self.has_financial_permission(request) else queryset
+
+    def get_list_display(self, request):
+        if self.has_financial_permission(request):
+            return ['number', 'current_balance', 'account_statement_link']
+        return super().get_list_display(request)
+
+    @admin.display(description='Current balance (MXN)')
+    def current_balance(self, obj):
+        return obj.balance
+
+    @admin.display(description='Account statement')
+    def account_statement_link(self, obj):
+        return format_html('<a href="{}">Account statement</a>', self.statement_url(obj))
+
+    def statement_url(self, obj):
+        return reverse(f'{self.admin_site.name}:core_house_account_statement', args=[quote(obj.pk)])
+
+    def render_change_form(self, request, context, add=False, change=False, form_url='', obj=None):
+        if obj is not None and self.has_financial_permission(request, obj):
+            context['account_statement_url'] = self.statement_url(obj)
+        return super().render_change_form(request, context, add, change, form_url, obj)
+
+    def get_urls(self):
+        return [path('<path:object_id>/account-statement/', self.admin_site.admin_view(self.account_statement_view), name='core_house_account_statement')] + super().get_urls()
+
+    def account_statement_view(self, request, object_id):
+        if not self.has_financial_permission(request):
+            raise PermissionDenied
+        if request.method != 'GET':
+            return HttpResponseNotAllowed(['GET'])
+        house = self.get_object(request, unquote(object_id))
+        if house is None:
+            raise Http404
+        if not self.has_financial_permission(request, house):
+            raise PermissionDenied
+        today = timezone.localdate()
+        form = StatementCutoffForm(request.GET if 'as_of' in request.GET else None, initial={'as_of': today})
+        valid = not form.is_bound or form.is_valid()
+        cutoff = (form.cleaned_data['as_of'] or today) if form.is_bound and valid else today
+        rows = account_statement(house, as_of=cutoff) if valid else []
+        charges = sum((row['charge_amount'] for row in rows), ZERO)
+        payments = sum((row['payment_amount'] for row in rows), ZERO)
+        context = {
+            **self.admin_site.each_context(request), 'opts': self.model._meta,
+            'title': f'House {house.number} — Account statement', 'house': house,
+            'house_url': reverse(f'{self.admin_site.name}:core_house_change', args=[quote(house.pk)]),
+            'house_list_url': reverse(f'{self.admin_site.name}:core_house_changelist'),
+            'form': form, 'valid_cutoff': valid, 'as_of': cutoff, 'rows': rows,
+            'total_charges': charges, 'total_payments': payments, 'balance': charges - payments,
+        }
+        return TemplateResponse(request, 'admin/core/house/account_statement.html', context, status=200 if valid else 400)
+
+
+class StatementCutoffForm(forms.Form):
+    as_of = forms.DateField(required=False, label='As of', widget=forms.DateInput(attrs={'type': 'date'}))
 
 
 @admin.register(Contact)
