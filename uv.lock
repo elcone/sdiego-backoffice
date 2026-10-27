@@ -35,6 +35,31 @@ wheels = [
 ]
 
 [[package]]
+name = "django-filter"
+version = "26.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/07/ee/c0f950fe24f3e0b69d054ad957f9229632b50bdc78e968f966d8b4efe16a/django_filter-26.2.tar.gz", hash = "sha256:fd5cc83995fbe9f5f07fb5dcda16fde0f04de1ecf8ef82628b6c0ec921b751af", size = 144828, upload-time = "2026-10-03T12:01:01.007Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/92/6b098caa5b980a9d13a8db4825b7670410fa572e9195e39648f7700f2a37/django_filter-26.2-py3-none-any.whl", hash = "sha256:df8f737841d6359df00b84dda9b5ab59067fe60292091f1bdae1e3e6281cedb0", size = 94077, upload-time = "2026-10-03T12:00:59.162Z" },
+]
+
+[[package]]
+name = "django-viewflow"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+    { name = "django-filter" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/eb/af/d55b421c4065bbb506ae57cc46e27b8eb43d2a1133c65ec1a8d06282d21f/django_viewflow-2.4.0.tar.gz", hash = "sha256:dbce804262f2d5d41d87383042670d1adf003d3952823742a2e35cfff7212768", size = 24659206, upload-time = "2026-07-30T13:45:15.62Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3d/ff/8aa0cf50a3bef70ce158bc2e4dd865b98d9ee250eae10d9dbfbf62fed66c/django_viewflow-2.4.0-py3-none-any.whl", hash = "sha256:f3d2b5b2ca46b4e54f2162b9faaadc01cb47629f87e5c6b03f93ade4af4f27bb", size = 24846482, upload-time = "2026-07-30T13:45:07.977Z" },
+]
+
+[[package]]
 name = "psycopg"
 version = "3.3.6"
 source = { registry = "https://pypi.org/simple" }
@@ -110,6 +135,8 @@ source = { virtual = "." }
 dependencies = [
     { name = "django" },
     { name = "django-environ" },
+    { name = "django-filter" },
+    { name = "django-viewflow" },
     { name = "psycopg", extra = ["binary"] },
 ]
 
@@ -117,6 +144,8 @@ dependencies = [
 requires-dist = [
     { name = "django", specifier = ">=6.1.2" },
     { name = "django-environ", specifier = ">=0.12" },
+    { name = "django-filter", specifier = ">=26.2" },
+    { name = "django-viewflow", specifier = ">=2.4.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
 ]
 
