@@ -1,16 +1,28 @@
+from functools import partial
+
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
 from django.core import signing
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import HttpResponseRedirect
+from django.shortcuts import get_object_or_404
 from django.urls import path
 from django.views.generic import FormView
 from viewflow import Icon
-from viewflow.urls import Application, ModelViewset, Site
+from viewflow.urls import (
+    Application,
+    CreateViewMixin,
+    ModelViewset,
+    ReadonlyModelViewset,
+    Site,
+    current_viewset_reverse,
+    route,
+)
 from viewflow.urls.model import DeleteViewMixin, DetailViewMixin
-from viewflow.views import Action, DetailModelView
+from viewflow.views import Action, CreateModelView, DetailModelView, UpdateModelView
 
 from .forms import (
+    BankTransactionForm,
     ChargeConceptForm,
     ChargeForm,
     ContactForm,
@@ -19,8 +31,11 @@ from .forms import (
     HouseContactForm,
     HouseForm,
     PayerAccountForm,
+    PaymentApplicationForm,
+    PaymentForm,
 )
 from .models import (
+    BankTransaction,
     Charge,
     ChargeConcept,
     Contact,
@@ -28,6 +43,8 @@ from .models import (
     House,
     HouseContact,
     PayerAccount,
+    Payment,
+    PaymentApplication,
 )
 
 
@@ -39,6 +56,33 @@ class CompleteDetailModelView(DetailModelView):
             if isinstance(value, bool):
                 value = "Sí" if value else "No"
             yield field, label, value
+
+
+class FinancialCreateModelView(CreateModelView):
+    def form_valid(self, form):
+        try:
+            return super().form_valid(form)
+        except ValidationError as exc:
+            form.add_error(None, " ".join(exc.messages))
+            return self.form_invalid(form)
+
+
+class FinancialUpdateModelView(UpdateModelView):
+    def form_valid(self, form):
+        try:
+            return super().form_valid(form)
+        except ValidationError as exc:
+            form.add_error(None, " ".join(exc.messages))
+            return self.form_invalid(form)
+
+
+class HouseDetailModelView(CompleteDetailModelView):
+    template_name = "treasury/house_detail.html"
+
+    def get_context_data(self, **kwargs):
+        return super().get_context_data(
+            balances=self.object.financial_balances(), **kwargs
+        )
 
 
 class CatalogModelViewset(DetailViewMixin, DeleteViewMixin, ModelViewset):
@@ -71,6 +115,7 @@ class HouseViewset(CatalogModelViewset):
     form_class = HouseForm
     list_columns = ("number",)
     list_search_fields = ("number",)
+    detail_view_class = HouseDetailModelView
 
 
 class ContactViewset(CatalogModelViewset):
@@ -206,6 +251,8 @@ class ChargeViewset(CatalogModelViewset):
     title = "Cargos"
     icon = "receipt_long"
     form_class = ChargeForm
+    create_view_class = FinancialCreateModelView
+    update_view_class = FinancialUpdateModelView
     queryset = Charge.objects.select_related(
         "house", "concept", "fee_configuration", "adjusts_charge"
     )
@@ -220,6 +267,136 @@ class ChargeViewset(CatalogModelViewset):
     list_search_fields = ("house__number", "concept__name")
     list_filter_fields = ("house", "concept", "period", "is_surcharge_eligible")
 
+    def has_delete_permission(self, user, obj=None):
+        return super().has_delete_permission(user, obj) and (
+            obj is None or not PaymentApplication.objects.filter(charge=obj).exists()
+        )
+
+
+class BankTransactionViewset(CreateViewMixin, ReadonlyModelViewset):
+    model = BankTransaction
+    title = "Movimientos bancarios"
+    icon = "account_balance"
+    create_form_class = BankTransactionForm
+    create_view_class = FinancialCreateModelView
+    detail_view_class = CompleteDetailModelView
+    list_columns = (
+        "transaction_date",
+        "bank_account",
+        "bank_receipt",
+        "line_type",
+        "amount",
+        "description",
+    )
+    list_search_fields = ("bank_account", "bank_receipt", "description")
+    list_filter_fields = ("line_type", "bank_account", "transaction_date")
+
+
+class PaymentApplicationDetailModelView(CompleteDetailModelView):
+    def get_queryset(self):
+        return self.viewset.get_queryset(self.request)
+
+
+class PaymentApplicationViewset(CatalogModelViewset):
+    model = PaymentApplication
+    title = "Aplicaciones del pago"
+    detail_view_class = PaymentApplicationDetailModelView
+    create_view_class = FinancialCreateModelView
+    update_view_class = FinancialUpdateModelView
+    list_columns = ("charge", "amount")
+
+    def get_payment(self, request):
+        payment = get_object_or_404(
+            Payment.objects.with_related(),
+            pk=request.resolver_match.kwargs["payment_pk"],
+        )
+        if not self.parent.has_view_permission(request.user, payment):
+            raise PermissionDenied
+        return payment
+
+    def get_queryset(self, request):
+        return PaymentApplication.objects.with_related().filter(
+            payment=self.get_payment(request)
+        )
+
+    def get_create_form_class(self, request):
+        return partial(PaymentApplicationForm, payment=self.get_payment(request))
+
+    get_update_form_class = get_create_form_class
+
+    def get_object_url(self, request, obj):
+        if self.has_view_permission(request.user, obj):
+            return current_viewset_reverse(
+                request, self, "detail", kwargs={"pk": obj.pk}
+            )
+
+    def get_success_url(self, request, obj=None):
+        return self.parent.reverse(
+            "detail", args=[request.resolver_match.kwargs["payment_pk"]]
+        )
+
+    def get_list_page_actions(self, request, *actions):
+        if self.has_add_permission(request.user):
+            return (
+                Action(
+                    name="Agregar aplicación",
+                    url=current_viewset_reverse(request, self, "add"),
+                    icon=Icon("add_circle"),
+                ),
+                *actions,
+            )
+        return actions
+
+    def get_update_page_actions(self, request, obj, *actions):
+        if self.has_delete_permission(request.user, obj):
+            return (
+                Action(
+                    name="Eliminar",
+                    url=current_viewset_reverse(
+                        request, self, "delete", kwargs={"pk": obj.pk}
+                    ),
+                    icon=Icon("delete"),
+                ),
+                *actions,
+            )
+        return actions
+
+    get_detail_page_actions = get_update_page_actions
+
+
+class PaymentDetailModelView(CompleteDetailModelView):
+    template_name = "treasury/payment_detail.html"
+
+    def get_context_data(self, **kwargs):
+        applications = self.object.paymentapplication_set.with_related()
+        return super().get_context_data(applications=applications, **kwargs)
+
+
+class PaymentViewset(CatalogModelViewset):
+    model = Payment
+    title = "Pagos"
+    icon = "payments"
+    form_class = PaymentForm
+    create_view_class = FinancialCreateModelView
+    update_view_class = FinancialUpdateModelView
+    detail_view_class = PaymentDetailModelView
+    queryset = Payment.objects.with_related()
+    list_columns = ("bank_transaction", "house", "payer_account", "amount")
+    list_search_fields = (
+        "house__number",
+        "bank_transaction__bank_receipt",
+        "payer_account__contact__name",
+    )
+    list_filter_fields = ("house", "payer_account")
+    applications_path = route(
+        "<int:payment_pk>/applications/", PaymentApplicationViewset()
+    )
+
+    def has_delete_permission(self, user, obj=None):
+        return super().has_delete_permission(user, obj) and (
+            obj is None or not PaymentApplication.objects.filter(payment=obj).exists()
+        )
+
 
 treasury = Application(
     app_name="treasury",
@@ -233,6 +410,8 @@ treasury = Application(
         ContactViewset(),
         HouseContactViewset(),
         PayerAccountViewset(),
+        BankTransactionViewset(),
+        PaymentViewset(),
     ],
 )
 site = Site(

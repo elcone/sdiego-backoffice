@@ -1,6 +1,7 @@
 from django import forms
 
 from .models import (
+    BankTransaction,
     Charge,
     ChargeConcept,
     Contact,
@@ -8,6 +9,8 @@ from .models import (
     House,
     HouseContact,
     PayerAccount,
+    Payment,
+    PaymentApplication,
 )
 
 
@@ -77,3 +80,35 @@ class FeeGenerationForm(forms.Form):
     preview_token = forms.CharField(
         label="Confirmación", required=False, widget=forms.HiddenInput
     )
+
+
+class BankTransactionForm(forms.ModelForm):
+    class Meta:
+        model = BankTransaction
+        fields = (
+            "bank_account",
+            "bank_receipt",
+            "line_type",
+            "transaction_date",
+            "description",
+            "amount",
+        )
+
+
+class PaymentForm(forms.ModelForm):
+    class Meta:
+        model = Payment
+        fields = ("bank_transaction", "house", "payer_account")
+
+
+class PaymentApplicationForm(forms.ModelForm):
+    class Meta:
+        model = PaymentApplication
+        fields = ("charge", "amount")
+
+    def __init__(self, *args, payment, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.instance.payment = payment
+        self.fields["charge"].queryset = Charge.objects.filter(
+            house=payment.house, amount__gt=0
+        ).select_related("house", "concept")

@@ -3,6 +3,7 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import ClassVar
 
+from django.contrib.admin import display
 from django.contrib.postgres.constraints import ExclusionConstraint
 from django.contrib.postgres.fields import DateRangeField, RangeOperators
 from django.core.exceptions import ValidationError
@@ -11,7 +12,13 @@ from django.db import models, transaction
 from django.db.models.functions import ExtractDay
 from django.db.models.lookups import Exact
 
-from .querysets import HouseContactQuerySet, PayerAccountQuerySet
+from .querysets import (
+    ChargeQuerySet,
+    HouseContactQuerySet,
+    PayerAccountQuerySet,
+    PaymentApplicationQuerySet,
+    PaymentQuerySet,
+)
 
 
 class TimestampedModel(models.Model):
@@ -38,6 +45,26 @@ class House(TimestampedModel):
 
     def __str__(self):
         return f"Casa {self.number}"
+
+    def financial_balances(self):
+        charges = Charge.objects.filter(house=self)
+        obligations = charges.filter(amount__gt=0).with_balances().aggregate(
+            total=models.Sum("pending")
+        )["total"] or Decimal("0.00")
+        charged = charges.aggregate(total=models.Sum("amount"))["total"] or Decimal(
+            "0.00"
+        )
+        received = Payment.objects.filter(house=self).aggregate(
+            total=models.Sum("bank_transaction__amount")
+        )["total"] or Decimal("0.00")
+        applied = PaymentApplication.objects.filter(payment__house=self).aggregate(
+            total=models.Sum("amount")
+        )["total"] or Decimal("0.00")
+        return {
+            "obligations": obligations,
+            "unapplied_credit": received - applied,
+            "net": charged - received,
+        }
 
 
 class Contact(TimestampedModel):
@@ -439,6 +466,8 @@ class Charge(TimestampedModel):
         "genera recargos", default=False, editable=False
     )
 
+    objects = ChargeQuerySet.as_manager()
+
     class Meta:
         verbose_name = "cargo"
         verbose_name_plural = "cargos"
@@ -523,12 +552,356 @@ class Charge(TimestampedModel):
                 errors["fee_configuration"] = (
                     "La configuración debe corresponder al concepto del cargo."
                 )
+        if self.amount is not None:
+            applied = self.applied_amount
+            negative = (
+                type(self)
+                .objects.filter(adjusts_charge_id=self.pk, amount__lt=0)
+                .aggregate(total=models.Sum("amount"))["total"]
+                if self.pk
+                else None
+            )
+            if applied and (
+                self.amount <= 0
+                or applied > self.amount + (negative or Decimal("0.00"))
+            ):
+                errors["amount"] = (
+                    "El cambio dejaría aplicaciones superiores al importe exigible. Corrija primero las aplicaciones."
+                )
+            if (
+                self.pk
+                and PaymentApplication.objects.filter(charge_id=self.pk)
+                .exclude(payment__house_id=self.house_id)
+                .exists()
+            ):
+                errors["house"] = (
+                    "La casa no puede diferir de la de los pagos aplicados."
+                )
+            targets = {original.pk} if original and self.amount < 0 else set()
+            if previous and previous.adjusts_charge_id and previous.amount < 0:
+                targets.add(previous.adjusts_charge_id)
+            for target in type(self).objects.filter(pk__in=targets):
+                negative_total = type(self).objects.filter(
+                    adjusts_charge=target, amount__lt=0
+                ).exclude(pk=self.pk).aggregate(total=models.Sum("amount"))[
+                    "total"
+                ] or Decimal("0.00")
+                if self.adjusts_charge_id == target.pk and self.amount < 0:
+                    negative_total += self.amount
+                if target.applied_amount > max(
+                    Decimal("0.00"), target.amount + negative_total
+                ):
+                    errors["amount"] = (
+                        "El ajuste dejaría aplicaciones superiores al importe exigible. Corrija primero las aplicaciones."
+                    )
+        if errors:
+            raise ValidationError(errors)
+
+    @property
+    def applied_amount(self):
+        if not self.pk:
+            return Decimal("0.00")
+        return PaymentApplication.objects.filter(charge=self).aggregate(
+            total=models.Sum("amount")
+        )["total"] or Decimal("0.00")
+
+    @property
+    def exigible_amount(self):
+        negative = type(self).objects.filter(
+            adjusts_charge=self, amount__lt=0
+        ).aggregate(total=models.Sum("amount"))["total"] or Decimal("0.00")
+        return max(Decimal("0.00"), self.amount + negative)
+
+    def save(self, *args, **kwargs):
+        with transaction.atomic():
+            list(
+                type(self)
+                .objects.select_for_update()
+                .filter(
+                    pk__in=[
+                        pk for pk in (self.pk, self.adjusts_charge_id) if pk is not None
+                    ]
+                )
+                .order_by("pk")
+            )
+            self.full_clean()
+            return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.house} · {self.concept} · {self.period:%Y-%m} · {self.amount}"
+
+
+class BankTransaction(TimestampedModel):
+    class LineType(models.TextChoices):
+        CREDIT = "CREDIT", "Ingreso"
+        DEBIT = "DEBIT", "Egreso"
+        COMMISSION = "COMMISSION", "Comisión"
+        VAT = "VAT", "IVA"
+
+    bank_account = models.CharField("cuenta bancaria propia", max_length=30)
+    bank_receipt = models.CharField("comprobante bancario", max_length=100)
+    line_type = models.CharField(
+        "tipo de movimiento", max_length=10, choices=LineType.choices
+    )
+    transaction_date = models.DateField("fecha del movimiento")
+    description = models.TextField("descripción", blank=True)
+    amount = models.DecimalField(
+        "importe",
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+
+    class Meta:
+        verbose_name = "movimiento bancario"
+        verbose_name_plural = "movimientos bancarios"
+        ordering = ("-transaction_date", "-pk")
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=("bank_account", "bank_receipt", "line_type"),
+                name="treasury_unique_bank_identity",
+                violation_error_message="Ya existe este movimiento bancario.",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="treasury_bank_positive_amount",
+                violation_error_message="El importe debe ser mayor que cero.",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    line_type__in=("CREDIT", "DEBIT", "COMMISSION", "VAT")
+                ),
+                name="treasury_bank_valid_type",
+                violation_error_message="Seleccione un tipo de movimiento válido.",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(bank_account__regex=r"^\s*$")
+                & ~models.Q(bank_receipt__regex=r"^\s*$"),
+                name="treasury_bank_nonblank_identity",
+                violation_error_message="La cuenta y el comprobante son obligatorios.",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        payment = (
+            Payment.objects.filter(bank_transaction_id=self.pk).first()
+            if self.pk
+            else None
+        )
+        if payment:
+            if self.line_type != self.LineType.CREDIT:
+                raise ValidationError(
+                    {
+                        "line_type": "Un movimiento identificado como pago debe ser un ingreso."
+                    }
+                )
+            if self.amount is not None and payment.applied_amount > self.amount:
+                raise ValidationError(
+                    {
+                        "amount": "El importe no puede ser inferior a las aplicaciones del pago."
+                    }
+                )
+
+    def save(self, *args, **kwargs):
+        with transaction.atomic():
+            if self.pk:
+                list(type(self).objects.select_for_update().filter(pk=self.pk))
+                list(
+                    Payment.objects.select_for_update()
+                    .filter(bank_transaction_id=self.pk)
+                    .order_by("pk")
+                )
+            self.full_clean()
+            return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.bank_receipt} · {self.get_line_type_display()} · {self.amount}"
+
+
+class Payment(TimestampedModel):
+    bank_transaction = models.OneToOneField(
+        BankTransaction, verbose_name="movimiento bancario", on_delete=models.PROTECT
+    )
+    house = models.ForeignKey(House, verbose_name="casa", on_delete=models.PROTECT)
+    payer_account = models.ForeignKey(
+        PayerAccount,
+        verbose_name="cuenta pagadora",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+    )
+
+    objects = PaymentQuerySet.as_manager()
+
+    class Meta:
+        verbose_name = "pago"
+        verbose_name_plural = "pagos"
+        ordering = ("-pk",)
+
+    @property
+    @display(description="Importe")
+    def amount(self):
+        return self.bank_transaction.amount
+
+    @property
+    def applied_amount(self):
+        return PaymentApplication.objects.filter(payment_id=self.pk).aggregate(
+            total=models.Sum("amount")
+        )["total"] or Decimal("0.00")
+
+    @property
+    def available_amount(self):
+        return self.amount - self.applied_amount
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        bank = BankTransaction.objects.filter(pk=self.bank_transaction_id).first()
+        if bank and bank.line_type != BankTransaction.LineType.CREDIT:
+            errors["bank_transaction"] = (
+                "Solo un movimiento de ingreso puede identificarse como pago."
+            )
+        payer = PayerAccount.objects.filter(pk=self.payer_account_id).first()
+        if (
+            payer
+            and not HouseContact.objects.filter(
+                house_id=self.house_id, contact_id=payer.contact_id
+            ).exists()
+        ):
+            errors["payer_account"] = (
+                "El titular debe estar relacionado con la casa, aunque la relación esté inactiva."
+            )
+        previous = type(self).objects.filter(pk=self.pk).first() if self.pk else None
+        if previous and PaymentApplication.objects.filter(payment=self).exists():
+            if previous.house_id != self.house_id:
+                errors["house"] = (
+                    "Corrija o elimine las aplicaciones antes de cambiar la casa."
+                )
+            if previous.bank_transaction_id != self.bank_transaction_id:
+                errors["bank_transaction"] = (
+                    "Corrija o elimine las aplicaciones antes de cambiar el movimiento."
+                )
         if errors:
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
-        self.full_clean()
-        return super().save(*args, **kwargs)
+        with transaction.atomic():
+            previous = (
+                type(self).objects.filter(pk=self.pk).first() if self.pk else None
+            )
+            bank_ids = {self.bank_transaction_id}
+            if previous:
+                bank_ids.add(previous.bank_transaction_id)
+            list(
+                BankTransaction.objects.select_for_update()
+                .filter(pk__in=bank_ids)
+                .order_by("pk")
+            )
+            if self.pk:
+                list(type(self).objects.select_for_update().filter(pk=self.pk))
+            self.full_clean()
+            return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        with transaction.atomic():
+            list(type(self).objects.select_for_update().filter(pk=self.pk))
+            return super().delete(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.house} · {self.concept} · {self.period:%Y-%m} · {self.amount}"
+        return f"Pago {self.pk} · {self.house} · {self.amount}"
+
+
+class PaymentApplication(TimestampedModel):
+    payment = models.ForeignKey(Payment, verbose_name="pago", on_delete=models.PROTECT)
+    charge = models.ForeignKey(Charge, verbose_name="cargo", on_delete=models.PROTECT)
+    amount = models.DecimalField(
+        "importe aplicado",
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+
+    objects = PaymentApplicationQuerySet.as_manager()
+
+    class Meta:
+        verbose_name = "aplicación de pago"
+        verbose_name_plural = "aplicaciones de pagos"
+        ordering = ("pk",)
+        constraints: ClassVar = [
+            models.UniqueConstraint(
+                fields=("payment", "charge"),
+                name="treasury_unique_payment_charge",
+                violation_error_message="Ya existe una aplicación de este pago al cargo.",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount__gt=0),
+                name="treasury_application_positive_amount",
+                violation_error_message="El importe aplicado debe ser mayor que cero.",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        payment = Payment.objects.with_related().filter(pk=self.payment_id).first()
+        charge = Charge.objects.filter(pk=self.charge_id).first()
+        errors = {}
+        if payment and charge:
+            if payment.house_id != charge.house_id:
+                errors["charge"] = (
+                    "El cargo debe pertenecer a la misma casa que el pago."
+                )
+            if charge.amount <= 0:
+                errors["charge"] = (
+                    "Solo los cargos positivos pueden recibir aplicaciones."
+                )
+            if self.amount is not None:
+                payment_used = type(self).objects.filter(payment=payment).exclude(
+                    pk=self.pk
+                ).aggregate(total=models.Sum("amount"))["total"] or Decimal("0.00")
+                charge_used = type(self).objects.filter(charge=charge).exclude(
+                    pk=self.pk
+                ).aggregate(total=models.Sum("amount"))["total"] or Decimal("0.00")
+                if payment_used + self.amount > payment.amount:
+                    errors["amount"] = (
+                        "El importe supera los fondos disponibles del pago."
+                    )
+                elif charge_used + self.amount > charge.exigible_amount:
+                    errors["amount"] = "El importe supera el saldo exigible del cargo."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        with transaction.atomic():
+            previous = (
+                type(self).objects.select_for_update().filter(pk=self.pk).first()
+                if self.pk
+                else None
+            )
+            if not self._state.adding and not previous:
+                raise ValidationError("La aplicación ya no existe.")
+            payments = {self.payment_id}
+            charges = {self.charge_id}
+            if previous:
+                payments.add(previous.payment_id)
+                charges.add(previous.charge_id)
+            list(
+                Payment.objects.select_for_update()
+                .filter(pk__in=payments)
+                .order_by("pk")
+            )
+            list(
+                Charge.objects.select_for_update().filter(pk__in=charges).order_by("pk")
+            )
+            self.full_clean()
+            return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        with transaction.atomic():
+            current = type(self).objects.select_for_update().get(pk=self.pk)
+            list(Payment.objects.select_for_update().filter(pk=current.payment_id))
+            list(Charge.objects.select_for_update().filter(pk=current.charge_id))
+            return super().delete(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.payment} · {self.charge} · {self.amount}"
