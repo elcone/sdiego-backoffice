@@ -46,7 +46,6 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django.contrib.postgres",
     "core.apps.CoreConfig",
-    "treasury.apps.TreasuryConfig",
     "viewflow",
     "django_filters",
 ]
