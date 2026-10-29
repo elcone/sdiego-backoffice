@@ -14,3 +14,6 @@ wheels/
 
 # Private expense receipts
 private_media/
+
+# Local historical data
+resources/
