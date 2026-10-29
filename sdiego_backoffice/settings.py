@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "treasury.apps.TreasuryConfig",
     "viewflow",
     "django_filters",
+    "rest_framework",
 ]
 
 MIDDLEWARE = [
@@ -135,3 +136,13 @@ MAILERS = {
 }
 
 MEDIA_ROOT = BASE_DIR / "private_media"
+
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
+    "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+    "DEFAULT_PAGINATION_CLASS": "treasury.api.pagination.TreasuryPagination",
+}

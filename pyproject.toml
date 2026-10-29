@@ -9,5 +9,6 @@ dependencies = [
     "django-environ>=0.12",
     "django-filter>=26.2",
     "django-viewflow>=2.4.0",
+    "djangorestframework>=3.18.3",
     "psycopg[binary]>=3.2",
 ]

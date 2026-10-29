@@ -16,10 +16,11 @@ Including another URLconf
 """
 
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
 from viewflow.contrib.auth import AuthViewset
 
 urlpatterns = [
+    path("api/", include("treasury.api.urls")),
     path("admin/", admin.site.urls),
     path("accounts/", AuthViewset().urls),
 ]
