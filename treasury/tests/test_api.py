@@ -85,6 +85,8 @@ class TreasuryAPITests(TestCase):
                     "house",
                     "expense_type",
                     "description",
+                    "metadata",
+                    "is_reviewed",
                 },
             ),
             (
@@ -331,14 +333,17 @@ class TreasuryAPITests(TestCase):
         self.assertEqual(client.get(self.url()).status_code, 200)
         self.assertEqual(
             client.patch(
-                self.url(), {"description": "Note"}, format="json"
+                self.url(), {"description": "Note", "is_reviewed": True}, format="json"
             ).status_code,
             403,
         )
         client.get("/admin/login/")
         token = client.cookies[settings.CSRF_COOKIE_NAME].value
         response = client.patch(
-            self.url(), {"description": "Note"}, format="json", HTTP_X_CSRFTOKEN=token
+            self.url(),
+            {"description": "Note", "is_reviewed": True},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
         )
         self.assertEqual(response.status_code, 200)
 
@@ -367,3 +372,41 @@ class TreasuryAPITests(TestCase):
                     ).status_code,
                     405,
                 )
+
+    def test_metadata_review_and_independent_status_filter(self):
+        self.credit.metadata = {
+            "origin_account": "001",
+            "matching": {"candidate_houses": [6102]},
+        }
+        self.credit.save()
+        response = self.client.get(self.url())
+        self.assertEqual(response.json()["metadata"], self.credit.metadata)
+        self.assertFalse(response.json()["is_reviewed"])
+        self.assertEqual(
+            self.client.patch(
+                self.url(), {"is_reviewed": True}, format="json"
+            ).status_code,
+            403,
+        )
+        self.client.force_authenticate(self.editor)
+        self.assertEqual(
+            self.client.patch(
+                self.url(), {"is_reviewed": True}, format="json"
+            ).status_code,
+            200,
+        )
+        data = self.client.get(
+            "/api/bank-transaction/", {"is_reviewed": "true", "status": "pending"}
+        ).json()
+        self.assertEqual([row["id"] for row in data["results"]], [self.credit.pk])
+        data = self.client.get(
+            "/api/bank-transaction/", {"is_reviewed": "false"}
+        ).json()
+        self.assertEqual(data["count"], 3)
+        response = self.client.patch(
+            self.url(), {"metadata": {}, "is_reviewed": False}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.credit.refresh_from_db()
+        self.assertTrue(self.credit.is_reviewed)
+        self.assertEqual(self.credit.metadata["origin_account"], "001")

@@ -22,7 +22,7 @@ class BankTransactionFilter(filters.FilterSet):
 
     class Meta:
         model = BankTransaction
-        fields = ("line_type", "house", "expense_type")
+        fields = ("line_type", "house", "expense_type", "is_reviewed")
 
     def filter_status(self, queryset, name, value):
         if value == "all":

@@ -62,16 +62,18 @@ class BankTransaction(models.Model):
     )
 
     description = models.TextField("descripción", blank=True)
+    metadata = models.JSONField("metadatos", default=dict, blank=True)
+    is_reviewed = models.BooleanField("revisado", default=False)
 
     class Meta:
         verbose_name = "movimiento bancario"
         verbose_name_plural = "movimientos bancarios"
-        constraints = [
+        constraints = (
             models.UniqueConstraint(
                 fields=["bank_account", "bank_receipt", "line_type"],
                 name="treasury_unique_bank_identity",
-            )
-        ]
+            ),
+        )
 
 
 class Charge(models.Model):

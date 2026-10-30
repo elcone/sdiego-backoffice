@@ -52,6 +52,8 @@ class BankTransactionSerializer(serializers.ModelSerializer):
             "house",
             "expense_type",
             "description",
+            "metadata",
+            "is_reviewed",
         )
         read_only_fields = (
             "id",
@@ -62,11 +64,12 @@ class BankTransactionSerializer(serializers.ModelSerializer):
             "amount",
             "balance",
             "concept",
+            "metadata",
         )
 
     def to_internal_value(self, data):
         if isinstance(data, Mapping) and self.instance is not None:
-            allowed = {"description"}
+            allowed = {"description", "is_reviewed"}
             if self.instance.line_type == BankTransaction.LineType.CREDIT:
                 allowed.add("house")
             else:
