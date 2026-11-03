@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.db.models import DecimalField, F, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.deletion import ProtectedError
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Abs, Coalesce
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -14,6 +14,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.permissions import DjangoModelPermissions, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from treasury.models import BankTransaction, Charge, ChargeType, ExpenseType, House
 
@@ -291,3 +292,66 @@ class ExpenseTypeViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 {"detail": "No se puede eliminar un tipo que tiene registros asociados."}
             ) from None
+
+
+class SummaryView(APIView):
+    permission_classes = (IsAuthenticated,)
+
+    def get(self, request):
+        now = timezone.localtime(timezone.now(), timezone.get_default_timezone())
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        end = (
+            start.replace(year=start.year + 1, month=1)
+            if start.month == 12
+            else start.replace(month=start.month + 1)
+        )
+        monthly = BankTransaction.objects.filter(
+            transaction_timestamp__gte=start,
+            transaction_timestamp__lt=end,
+        )
+        totals = monthly.aggregate(
+            income=Sum("amount", filter=Q(line_type="CREDIT"), default=0),
+            expense=Sum(
+                "amount",
+                filter=Q(line_type__in=["DEBIT", "COMMISSION", "COMMISSION_VAT"]),
+                default=0,
+            ),
+        )
+        pending = BankTransaction.objects.filter(
+            line_type__in=["DEBIT", "COMMISSION", "COMMISSION_VAT"]
+        ).filter(Q(expense_type__isnull=True) | Q(is_reviewed=False))
+        pending_total = pending.aggregate(total=Sum("amount", default=0))["total"]
+        houses = HouseViewSet().get_queryset().filter(balance__gt=0)
+        receivable = houses.aggregate(total=Sum("balance", default=0))["total"]
+        top_houses = houses.order_by("-balance", "number", "pk").values(
+            "number", "balance"
+        )[:10]
+        top_expenses = (
+            monthly.filter(line_type__in=["DEBIT", "COMMISSION", "COMMISSION_VAT"])
+            .values("expense_type_id", "expense_type__name")
+            .annotate(total=Abs(Sum("amount")))
+            .order_by("-total", "expense_type__name", "expense_type_id")[:10]
+        )
+        return Response(
+            {
+                "income": format(totals["income"], ".2f"),
+                "expense": format(totals["expense"], ".2f"),
+                "receivable": format(receivable, ".2f"),
+                "pending_expenses": format(pending_total, ".2f"),
+                "top_houses": [
+                    {"number": row["number"], "balance": format(row["balance"], ".2f")}
+                    for row in top_houses
+                ],
+                "top_expenses": [
+                    {
+                        "name": (
+                            row["expense_type__name"]
+                            if row["expense_type_id"] is not None
+                            else "Sin clasificar"
+                        ),
+                        "total": format(row["total"], ".2f"),
+                    }
+                    for row in top_expenses
+                ],
+            }
+        )
