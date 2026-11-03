@@ -3,6 +3,7 @@ from datetime import date, datetime, time, timezone as datetime_timezone
 from decimal import Decimal
 from unittest.mock import patch
 
+from django import forms
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.db.models import Sum
@@ -204,7 +205,7 @@ class HouseAccountAdminTests(TestCase):
 
     def test_invalid_cutoff_missing_house_and_no_post_writes(self):
         response = self.client.get(self.url, {'as_of':'invalid'})
-        self.assertContains(response, 'Enter a valid date.', status_code=400)
+        self.assertContains(response, forms.DateField.default_error_messages['invalid'], status_code=400)
         self.assertNotContains(response, 'Account summary', status_code=400)
         self.assertEqual(self.client.get(reverse('admin:core_house_account_statement', args=[999999])).status_code, 404)
         before = list(Charge.objects.order_by('pk').values())

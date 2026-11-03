@@ -44,6 +44,30 @@ class ChargeSerializer(serializers.ModelSerializer):
             "description",
         )
 
+    def validate_period(self, value):
+        if value.day != 1:
+            raise serializers.ValidationError(
+                "El periodo debe ser el primer día del mes."
+            )
+        return value
+
+
+class BulkChargeSerializer(ChargeSerializer):
+    class Meta(ChargeSerializer.Meta):
+        fields = ("charge_type", "period", "due_date", "amount", "description")
+
+    def to_internal_value(self, data):
+        if isinstance(data, Mapping):
+            forbidden = set(data) - set(self.fields)
+            if forbidden:
+                raise serializers.ValidationError(
+                    {
+                        key: "Este campo no se admite en la generación masiva."
+                        for key in sorted(forbidden)
+                    }
+                )
+        return super().to_internal_value(data)
+
 
 class BankTransactionSerializer(serializers.ModelSerializer):
     house_label = serializers.CharField(

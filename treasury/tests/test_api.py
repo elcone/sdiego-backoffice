@@ -363,6 +363,9 @@ class TreasuryAPITests(TestCase):
             ("charge-type", self.charge_type),
             ("expense-type", self.expense_type),
         ]:
+            denied_status = (
+                403 if endpoint in ("charge", "charge-type", "expense-type") else 405
+            )
             for method in ["post", "put", "delete"]:
                 for url in [f"/api/{endpoint}/", f"/api/{endpoint}/{instance.pk}/"]:
                     with self.subTest(method=method, url=url):
@@ -370,14 +373,14 @@ class TreasuryAPITests(TestCase):
                             getattr(self.client, method)(
                                 url, {}, format="json"
                             ).status_code,
-                            405,
+                            denied_status,
                         )
             if endpoint != "bank-transaction":
                 self.assertEqual(
                     self.client.patch(
                         f"/api/{endpoint}/{instance.pk}/", {}, format="json"
                     ).status_code,
-                    405,
+                    denied_status,
                 )
 
     def test_metadata_review_and_independent_status_filter(self):

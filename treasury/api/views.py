@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import DecimalField, F, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.deletion import ProtectedError
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -10,8 +11,8 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
-from rest_framework.filters import OrderingFilter
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.permissions import DjangoModelPermissions, IsAuthenticated
 from rest_framework.response import Response
 
 from treasury.models import BankTransaction, Charge, ChargeType, ExpenseType, House
@@ -25,6 +26,7 @@ from .filters import (
 from .permissions import CanChangeBankTransaction
 from .serializers import (
     BankTransactionSerializer,
+    BulkChargeSerializer,
     ChargeSerializer,
     ChargeTypeSerializer,
     ExpenseTypeSerializer,
@@ -214,18 +216,78 @@ class BankTransactionViewSet(mixins.UpdateModelMixin, viewsets.ReadOnlyModelView
         return super().partial_update(request, *args, **kwargs)
 
 
-class ChargeViewSet(viewsets.ReadOnlyModelViewSet):
+@method_decorator(ensure_csrf_cookie, name="dispatch")
+class ChargeViewSet(mixins.CreateModelMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Charge.objects.order_by("-period", "id")
     serializer_class = ChargeSerializer
-    filter_backends = (DjangoFilterBackend,)
+    permission_classes = (DjangoModelPermissions,)
+    http_method_names = ("get", "post", "head", "options")
+    filter_backends = (DjangoFilterBackend, SearchFilter)
     filterset_class = ChargeFilter
+    search_fields = ("house__number", "charge_type__name", "period", "description")
+
+    @action(detail=False, methods=["post"], url_path="generate-all")
+    @transaction.atomic
+    def generate_all(self, request):
+        serializer = BulkChargeSerializer(
+            data=request.data, context=self.get_serializer_context()
+        )
+        serializer.is_valid(raise_exception=True)
+        values = serializer.validated_data
+        # Serialize bulk generations of this type without blocking FK key-share
+        # locks used by the unchanged individual creation endpoint.
+        ChargeType.objects.select_for_update(no_key=True).get(
+            pk=values["charge_type"].pk
+        )
+        house_ids = list(House.objects.order_by("pk").values_list("pk", flat=True))
+        existing = set(
+            Charge.objects.filter(
+                house_id__in=house_ids,
+                charge_type=values["charge_type"],
+                period=values["period"],
+                amount=values["amount"],
+                due_date=values["due_date"],
+            ).values_list("house_id", flat=True)
+        )
+        for house_id in house_ids:
+            if house_id not in existing:
+                Charge.objects.create(house_id=house_id, **values)
+        return Response(
+            {
+                "created_count": len(house_ids) - len(existing),
+                "skipped_count": len(existing),
+                "total_count": len(house_ids),
+            }
+        )
 
 
-class ChargeTypeViewSet(viewsets.ReadOnlyModelViewSet):
+@method_decorator(ensure_csrf_cookie, name="dispatch")
+class ChargeTypeViewSet(viewsets.ModelViewSet):
     queryset = ChargeType.objects.order_by("name", "id")
     serializer_class = ChargeTypeSerializer
+    permission_classes = (DjangoModelPermissions,)
+    http_method_names = ("get", "post", "patch", "delete", "head", "options")
+
+    def perform_destroy(self, instance):
+        try:
+            instance.delete()
+        except ProtectedError:
+            raise ValidationError(
+                {"detail": "No se puede eliminar un tipo que tiene registros asociados."}
+            ) from None
 
 
-class ExpenseTypeViewSet(viewsets.ReadOnlyModelViewSet):
+@method_decorator(ensure_csrf_cookie, name="dispatch")
+class ExpenseTypeViewSet(viewsets.ModelViewSet):
     queryset = ExpenseType.objects.order_by("name", "id")
     serializer_class = ExpenseTypeSerializer
+    permission_classes = (DjangoModelPermissions,)
+    http_method_names = ("get", "post", "patch", "delete", "head", "options")
+
+    def perform_destroy(self, instance):
+        try:
+            instance.delete()
+        except ProtectedError:
+            raise ValidationError(
+                {"detail": "No se puede eliminar un tipo que tiene registros asociados."}
+            ) from None
