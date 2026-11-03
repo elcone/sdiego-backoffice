@@ -1,5 +1,9 @@
+from decimal import Decimal
+
 from django.db import transaction
-from django.db.models import Q, Sum
+from django.db.models import DecimalField, F, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django_filters.rest_framework import DjangoFilterBackend
@@ -12,7 +16,12 @@ from rest_framework.response import Response
 
 from treasury.models import BankTransaction, Charge, ChargeType, ExpenseType, House
 
-from .filters import BankTransactionFilter, BankTransactionSearchFilter, ChargeFilter
+from .filters import (
+    BankTransactionFilter,
+    BankTransactionSearchFilter,
+    ChargeFilter,
+    HouseFilter,
+)
 from .permissions import CanChangeBankTransaction
 from .serializers import (
     BankTransactionSerializer,
@@ -26,6 +35,111 @@ from .serializers import (
 class HouseViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = House.objects.order_by("number", "id")
     serializer_class = HouseSerializer
+    filter_backends = (DjangoFilterBackend,)
+    filterset_class = HouseFilter
+
+    def get_queryset(self):
+        money = DecimalField(max_digits=24, decimal_places=2)
+        charges = (
+            Charge.objects.filter(house_id=OuterRef("pk"))
+            .order_by()
+            .values("house_id")
+            .annotate(total=Sum("amount"))
+            .values("total")
+        )
+        payments = (
+            BankTransaction.objects.filter(
+                house_id=OuterRef("pk"), line_type=BankTransaction.LineType.CREDIT
+            )
+            .order_by()
+            .values("house_id")
+            .annotate(total=Sum("amount"))
+            .values("total")
+        )
+        return (
+            super()
+            .get_queryset()
+            .annotate(
+                total_charges=Coalesce(
+                    Subquery(charges, output_field=money),
+                    Value(Decimal("0.00"), output_field=money),
+                ),
+                total_payments=Coalesce(
+                    Subquery(payments, output_field=money),
+                    Value(Decimal("0.00"), output_field=money),
+                ),
+            )
+            .annotate(balance=F("total_charges") - F("total_payments"))
+        )
+
+    @action(detail=True)
+    def statement(self, request, pk=None):
+        house = self.get_object()
+        # Evaluate both sources in one SQL statement to share a database snapshot.
+        charges = (
+            Charge.objects.filter(house=house)
+            .order_by()
+            .values("id", "period", "amount", "description")
+            .annotate(transaction_type=Value("charge"))
+        )
+        payments = (
+            BankTransaction.objects.filter(
+                house=house, line_type=BankTransaction.LineType.CREDIT
+            )
+            .order_by()
+            .annotate(
+                effective_date=F("transaction_timestamp__date"),
+                statement_description=F("concept"),
+            )
+            .values("id", "effective_date", "amount", "statement_description")
+            .annotate(transaction_type=Value("payment"))
+        )
+        # The date transform uses Django's configured timezone.
+        with timezone.override(timezone.get_default_timezone()):
+            rows = list(charges.union(payments, all=True))
+        rows.sort(
+            key=lambda row: (
+                row["period"],
+                row["transaction_type"] != "charge",
+                row["id"],
+            )
+        )
+        total_charges = total_payments = balance = Decimal("0.00")
+        movements = []
+        for row in rows:
+            charge = (
+                row["amount"]
+                if row["transaction_type"] == "charge"
+                else Decimal("0.00")
+            )
+            payment = (
+                row["amount"]
+                if row["transaction_type"] == "payment"
+                else Decimal("0.00")
+            )
+            total_charges += charge
+            total_payments += payment
+            balance += charge - payment
+            movements.append(
+                {
+                    "id": row["id"],
+                    "transaction_type": row["transaction_type"],
+                    "date": row["period"].isoformat(),
+                    "description": row["description"],
+                    "charge_amount": format(charge, ".2f"),
+                    "payment_amount": format(payment, ".2f"),
+                    "running_balance": format(balance, ".2f"),
+                }
+            )
+        return Response(
+            {
+                "house": {"id": house.pk, "number": house.number},
+                "total_charges": format(total_charges, ".2f"),
+                "total_payments": format(total_payments, ".2f"),
+                "balance": format(balance, ".2f"),
+                "results": movements,
+            }
+        )
 
 
 @method_decorator(ensure_csrf_cookie, name="dispatch")

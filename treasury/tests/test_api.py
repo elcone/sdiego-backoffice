@@ -69,7 +69,11 @@ class TreasuryAPITests(TestCase):
 
     def test_lists_details_and_exact_fields(self):
         for endpoint, instance, fields in [
-            ("house", self.house, {"id", "number"}),
+            (
+                "house",
+                self.house,
+                {"id", "number", "total_charges", "total_payments", "balance"},
+            ),
             (
                 "bank-transaction",
                 self.credit,

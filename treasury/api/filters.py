@@ -6,6 +6,12 @@ from rest_framework.filters import SearchFilter
 from treasury.models import BankTransaction, Charge
 
 
+class HouseFilter(filters.FilterSet):
+    number = filters.NumberFilter(
+        field_name="number", lookup_expr="exact", decimal_places=0
+    )
+
+
 class BankTransactionSearchFilter(SearchFilter):
     def filter_queryset(self, request, queryset, view):
         scope = request.query_params.get("search_scope")

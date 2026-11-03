@@ -6,9 +6,17 @@ from treasury.models import BankTransaction, Charge, ChargeType, ExpenseType, Ho
 
 
 class HouseSerializer(serializers.ModelSerializer):
+    total_charges = serializers.DecimalField(
+        max_digits=24, decimal_places=2, read_only=True
+    )
+    total_payments = serializers.DecimalField(
+        max_digits=24, decimal_places=2, read_only=True
+    )
+    balance = serializers.DecimalField(max_digits=24, decimal_places=2, read_only=True)
+
     class Meta:
         model = House
-        fields = ("id", "number")
+        fields = ("id", "number", "total_charges", "total_payments", "balance")
 
 
 class ChargeTypeSerializer(serializers.ModelSerializer):
