@@ -1,0 +1,25 @@
+[Unit]
+Description=Privada San Diego Backoffice
+After=network.target postgresql@17-main.service
+
+[Service]
+Type=simple
+User=sdiego-backoffice
+Group=sdiego-backoffice
+WorkingDirectory=/srv/sdiego-backoffice/current/backend
+EnvironmentFile=/etc/sdiego-backoffice/backend.env
+Environment=DJANGO_SETTINGS_MODULE=sdiego_backoffice.settings_production
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/srv/sdiego-backoffice/current/backend/.venv/bin/gunicorn --config deploy/gunicorn.conf.py sdiego_backoffice.wsgi:application
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/sdiego-backoffice/shared
+
+[Install]
+WantedBy=multi-user.target

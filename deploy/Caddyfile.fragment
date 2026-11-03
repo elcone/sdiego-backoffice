@@ -1,0 +1,39 @@
+# Review only. Confirmed site; do not apply during preflight.
+# Append only this site's block; do not replace the active Caddyfile.
+privadasandiego.elcone.dev {
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>headers delete
+				request>uri delete
+				resp_headers delete
+			}
+		}
+	}
+
+	@private path /.env /.env/* /.git /.git/* /media /media/* /private_media /private_media/* /backend /backend/* /shared /shared/*
+	handle @private {
+		respond 404
+	}
+
+	@django path /api /api/* /accounts /accounts/* /admin /admin/*
+	handle @django {
+		reverse_proxy 127.0.0.1:8002 {
+			header_up Host {host}
+			# Caddy supplies X-Forwarded-Proto and ignores untrusted input.
+			lb_retries 0
+		}
+	}
+
+	handle_path /static/* {
+		root * /srv/sdiego-backoffice/current/static
+		file_server
+	}
+
+	handle {
+		root * /srv/sdiego-backoffice/current/frontend
+		try_files {path} /index.html
+		file_server
+	}
+}

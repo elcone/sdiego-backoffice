@@ -12,3 +12,6 @@ dependencies = [
     "djangorestframework>=3.18.3",
     "psycopg[binary]>=3.2",
 ]
+
+[project.optional-dependencies]
+production = ["gunicorn==26.2.0"]
