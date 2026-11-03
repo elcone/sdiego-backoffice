@@ -81,6 +81,9 @@ class TreasuryAPITests(TestCase):
                     "transaction_timestamp",
                     "amount",
                     "balance",
+                    "account_balance",
+                    "house_label",
+                    "expense_type_label",
                     "concept",
                     "house",
                     "expense_type",
@@ -410,3 +413,189 @@ class TreasuryAPITests(TestCase):
         self.credit.refresh_from_db()
         self.assertTrue(self.credit.is_reviewed)
         self.assertEqual(self.credit.metadata["origin_account"], "001")
+
+    def test_movement_server_ordering_pagination_and_tabs(self):
+        for ordering, reverse in [("line_type", False), ("-line_type", True)]:
+            expected = sorted(
+                self.banks, key=lambda bank: bank.line_type, reverse=reverse
+            )
+            data = self.client.get(
+                "/api/bank-transaction/",
+                {
+                    "ordering": ordering,
+                    "page_size": 2,
+                    "page": 2,
+                },
+            ).json()
+            self.assertEqual(data["count"], 4)
+            self.assertEqual(
+                [row["id"] for row in data["results"]],
+                [bank.pk for bank in expected[2:]],
+            )
+        data = self.client.get("/api/bank-transaction/", {"tab": "debit"}).json()
+        self.assertEqual(
+            {row["line_type"] for row in data["results"]},
+            {"DEBIT", "COMMISSION", "COMMISSION_VAT"},
+        )
+        data = self.client.get("/api/bank-transaction/", {"tab": "credit"}).json()
+        self.assertEqual([row["id"] for row in data["results"]], [self.credit.pk])
+
+    def test_summary_dates_permissions_and_balance_alias(self):
+        data = self.client.get("/api/bank-transaction/summary/").json()
+        self.assertEqual(Decimal(data["balance"]), Decimal("1000.50"))
+        self.assertEqual(Decimal(data["income"]), Decimal("100.25"))
+        self.assertEqual(Decimal(data["expense"]), Decimal("-5.25"))
+        self.assertEqual(Decimal(data["commission"]), Decimal("-10.50"))
+        self.assertFalse(data["can_change"])
+        data = self.client.get(
+            "/api/bank-transaction/summary/", {"date_from": "2026-02-03"}
+        ).json()
+        self.assertEqual(Decimal(data["income"]), 0)
+        self.assertEqual(Decimal(data["balance"]), Decimal("1000.50"))
+        self.assertEqual(
+            self.client.get(
+                "/api/bank-transaction/summary/", {"date_from": "bad"}
+            ).status_code,
+            400,
+        )
+        self.client.force_authenticate(self.editor)
+        self.assertTrue(
+            self.client.get("/api/bank-transaction/summary/").json()["can_change"]
+        )
+        detail = self.client.get(self.url()).json()
+        self.assertEqual(detail["account_balance"], detail["balance"])
+        self.assertIsNone(detail["house_label"])
+        self.assertEqual(
+            self.client.patch(
+                self.url(), {"account_balance": "1.00"}, format="json"
+            ).status_code,
+            400,
+        )
+
+    def test_list_sets_csrf_cookie(self):
+        client = APIClient(enforce_csrf_checks=True)
+        client.force_login(self.editor)
+        client.get("/api/bank-transaction/")
+        token = client.cookies[settings.CSRF_COOKIE_NAME].value
+        response = client.patch(
+            self.url(),
+            {"description": "CSRF note"},
+            format="json",
+            HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_local_calendar_range_uses_inclusive_start_exclusive_end(self):
+        params = {
+            "timestamp_from": "2026-02-02T06:00:00Z",
+            "timestamp_before": "2026-02-03T06:00:00Z",
+        }
+        data = self.client.get("/api/bank-transaction/", params).json()
+        self.assertEqual(data["count"], 4)
+        params["timestamp_before"] = "2026-02-02T12:00:00Z"
+        self.assertEqual(
+            self.client.get("/api/bank-transaction/", params).json()["count"], 0
+        )
+        self.assertEqual(
+            Decimal(
+                self.client.get("/api/bank-transaction/summary/", params).json()[
+                    "income"
+                ]
+            ),
+            0,
+        )
+
+    def test_scoped_search_uses_associated_house_and_partial_concept(self):
+        self.credit.house = self.house
+        self.credit.concept = "Cuota de mantenimiento"
+        self.credit.save()
+        debit = self.banks[0]
+        debit.house = self.other_house
+        debit.concept = f"Texto bancario {self.house.number}"
+        debit.bank_receipt = "solo-comprobante"
+        debit.save()
+        cases = [
+            ("house", str(self.house.number), {self.credit.pk}),
+            ("house", str(self.house.number)[:3], set()),
+            ("house", "0006102", {self.credit.pk}),
+            ("house", "Cuota", set()),
+            ("house", "9" * 100, set()),
+            ("concept", "MANTENIM", {self.credit.pk}),
+            ("concept", "solo-comprobante", set()),
+            ("all", str(self.house.number), {self.credit.pk, debit.pk}),
+            ("all", "cuota", {self.credit.pk}),
+            ("all", "solo-comprobante", set()),
+            ("all", "   ", {bank.pk for bank in self.banks}),
+        ]
+        for scope, query, expected in cases:
+            with self.subTest(scope=scope, query=query):
+                response = self.client.get(
+                    "/api/bank-transaction/",
+                    {"search_scope": scope, "search": query},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    {row["id"] for row in response.json()["results"]}, expected
+                )
+        response = self.client.get(
+            "/api/bank-transaction/", {"search_scope": "receipt", "search": "x"}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("search_scope", response.json())
+        self.assertEqual(
+            self.client.get(
+                "/api/bank-transaction/", {"search": "solo-comprobante"}
+            ).json()["count"],
+            1,
+        )
+
+    def test_review_scoped_search_dates_and_tabs_combine_with_and(self):
+        self.credit.house = self.house
+        self.credit.is_reviewed = True
+        self.credit.save()
+        for bank in self.banks:
+            if bank.line_type != "CREDIT":
+                bank.concept = "Servicio mensual"
+                bank.save()
+        params = {
+            "tab": "debit",
+            "is_reviewed": "false",
+            "search_scope": "concept",
+            "search": "servicio",
+            "timestamp_from": "2026-02-02T06:00:00Z",
+            "timestamp_before": "2026-02-03T06:00:00Z",
+            "ordering": "line_type",
+            "page_size": 2,
+        }
+        first = self.client.get("/api/bank-transaction/", params).json()
+        second = self.client.get("/api/bank-transaction/", {**params, "page": 2}).json()
+        self.assertEqual(first["count"], 3)
+        self.assertEqual(
+            [row["line_type"] for row in first["results"] + second["results"]],
+            ["COMMISSION", "COMMISSION_VAT", "DEBIT"],
+        )
+        for overrides in [
+            {"tab": "credit"},
+            {"is_reviewed": "true"},
+            {"search_scope": "house", "search": str(self.house.number)},
+            {"timestamp_before": "2026-02-02T12:00:00Z"},
+        ]:
+            data = self.client.get(
+                "/api/bank-transaction/", {**params, **overrides}
+            ).json()
+            self.assertEqual(data["count"], 0)
+        data = self.client.get(
+            "/api/bank-transaction/",
+            {
+                "search_scope": "house",
+                "search": str(self.house.number),
+                "is_reviewed": "true",
+            },
+        ).json()
+        self.assertEqual([row["id"] for row in data["results"]], [self.credit.pk])
+        self.assertEqual(
+            self.client.get("/api/bank-transaction/", {"is_reviewed": "false"}).json()[
+                "count"
+            ],
+            3,
+        )

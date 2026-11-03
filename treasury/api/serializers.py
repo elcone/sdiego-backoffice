@@ -38,6 +38,16 @@ class ChargeSerializer(serializers.ModelSerializer):
 
 
 class BankTransactionSerializer(serializers.ModelSerializer):
+    house_label = serializers.CharField(
+        source="house.number", read_only=True, default=None
+    )
+    expense_type_label = serializers.CharField(
+        source="expense_type.name", read_only=True, default=None
+    )
+    account_balance = serializers.DecimalField(
+        source="balance", max_digits=18, decimal_places=2, read_only=True
+    )
+
     class Meta:
         model = BankTransaction
         fields = (
@@ -48,9 +58,12 @@ class BankTransactionSerializer(serializers.ModelSerializer):
             "transaction_timestamp",
             "amount",
             "balance",
+            "account_balance",
             "concept",
             "house",
+            "house_label",
             "expense_type",
+            "expense_type_label",
             "description",
             "metadata",
             "is_reviewed",
@@ -63,6 +76,7 @@ class BankTransactionSerializer(serializers.ModelSerializer):
             "transaction_timestamp",
             "amount",
             "balance",
+            "account_balance",
             "concept",
             "metadata",
         )
