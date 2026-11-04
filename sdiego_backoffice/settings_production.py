@@ -46,21 +46,30 @@ STATIC_URL = "/static/"
 STATIC_ROOT = env.path("STATIC_ROOT")
 MEDIA_ROOT = env.path("MEDIA_ROOT")
 
-MAILERS = {
-    "default": {
-        "BACKEND": "django.core.mail.backends.smtp.EmailBackend",
-        "OPTIONS": {
-            "host": env("EMAIL_HOST"),
-            "port": env.int("EMAIL_PORT"),
-            "username": env("EMAIL_HOST_USER"),
-            "password": env("EMAIL_HOST_PASSWORD"),
-            "use_tls": True,
-            "timeout": 10,
-        },
-    },
-}
-DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
-SERVER_EMAIL = DEFAULT_FROM_EMAIL
+EMAIL_BACKEND = env(
+    "EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend"
+)
+MAILERS = {"default": {"BACKEND": EMAIL_BACKEND}}
+if EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend":
+    MAILERS["default"]["OPTIONS"] = {
+        "host": env("EMAIL_HOST"),
+        "port": env.int("EMAIL_PORT"),
+        "username": env("EMAIL_HOST_USER"),
+        "password": env("EMAIL_HOST_PASSWORD"),
+        "use_tls": True,
+        "timeout": 10,
+    }
+    DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL")
+    if not all(
+        MAILERS["default"]["OPTIONS"][field]
+        for field in ("host", "username", "password")
+    ) or not DEFAULT_FROM_EMAIL:
+        raise ImproperlyConfigured(
+            "SMTP requiere servidor, credenciales y remitente reales."
+        )
+    SERVER_EMAIL = DEFAULT_FROM_EMAIL
+elif EMAIL_BACKEND != "django.core.mail.backends.dummy.EmailBackend":
+    raise ImproperlyConfigured("Seleccione el backend SMTP o dummy de Django.")
 
 LOGGING = {
     "version": 1,

@@ -195,8 +195,11 @@ Después, en este orden y con las pausas indicadas:
 3. El propietario configura mediante editor/mecanismo protegido backend.env y
    migration.env, root:root 0600; SECRET_KEY estable y passwords no se imprimen.
    ALLOWED_HOSTS=privadasandiego.elcone.dev; STATIC_ROOT="$release/static";
-   MEDIA_ROOT=/srv/sdiego-backoffice/shared/private-media. SMTP y HSTS siguen
-   requiriendo valores reales/aprobados; no usar los marcadores del ejemplo.
+   MEDIA_ROOT=/srv/sdiego-backoffice/shared/private-media. Para esta etapa sin correo,
+   EMAIL_BACKEND=django.core.mail.backends.dummy.EmailBackend en ambos entornos;
+   no se requieren ni se inventan valores SMTP. La entrega y recuperación por correo
+   están deshabilitadas temporalmente; al habilitar SMTP se exigirán los cinco campos
+   reales. HSTS utiliza el valor aprobado; no usar marcadores del ejemplo.
 4. Definir esta función solo en la sesión operativa autorizada:
 
    ```bash

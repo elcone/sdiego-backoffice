@@ -11,8 +11,11 @@ son instrucciones para una ejecución futura y autorizada. No son un script auto
   A `privadasandiego` hacia `160.153.179.18`; no crear AAAA sin IPv6 verificada.
 - Decisión definitiva: sin limitación de login basada en IP. No se añade caché,
   middleware, Redis, módulos Caddy ni umbrales para ese fin.
-- Confirmar SMTP con STARTTLS, remitente y credenciales; preservar el correo de
-  recuperación de Viewflow, sin sustituirlo por consola ni descartarlo.
+- Operación inicial sin correo: configurar explícitamente
+  `EMAIL_BACKEND=django.core.mail.backends.dummy.EmailBackend`. No se requieren
+  variables SMTP. Los mensajes se descartan; la recuperación por correo de Viewflow
+  no entregará mensajes hasta configurar SMTP real. Login, sesiones, logout y
+  operaciones administrativas no dependen de recibir correo.
 - Aprobar el valor inicial de HSTS, sin includeSubDomains ni preload.
 - Ejecutar `core.0003_initial_fee_configuration` normalmente: sus dos
   configuraciones están aceptadas; no omitir, modificar ni revertir la migración. `core.0004` también exige que la tabla bancaria antigua
@@ -96,8 +99,11 @@ no usar `set -x`, ni secretos como argumentos o dentro del historial de shell.
 - `SECURE_HSTS_SECONDS`: valor explícitamente aprobado.
 - `STATIC_ROOT`: ruta absoluta `.../releases/<par>/static` del release correspondiente.
 - `MEDIA_ROOT=/srv/sdiego-backoffice/shared/private-media`.
-- `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`,
-  `DEFAULT_FROM_EMAIL`: servicio STARTTLS real confirmado; no usar marcadores.
+- `EMAIL_BACKEND`: dummy explícito para esta etapa; envío deshabilitado temporalmente.
+  SMTP sigue siendo el valor predeterminado si no se define esta variable y exige
+  `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD` y
+  `DEFAULT_FROM_EMAIL` reales y no vacíos. No reutilizar secretos de otros proyectos.
+  `check --deploy` identifica dummy como mail.E001; no se silencia ese check.
 
 El módulo productivo exige estas variables del proceso, ignora el `.env` local,
 impone DEBUG=False, cookies Secure, redirección HTTPS y confianza del esquema
