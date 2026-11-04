@@ -9,6 +9,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_POST
 
 UI_PERMISSIONS = (
+    "treasury.add_banktransaction",
     "treasury.change_banktransaction",
     "treasury.add_charge",
     "treasury.add_chargetype",

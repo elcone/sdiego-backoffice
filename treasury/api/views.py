@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import DecimalField, F, OuterRef, Q, Subquery, Sum, Value
+from django.db.models import DecimalField, F, Max, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.deletion import ProtectedError
 from django.db.models.functions import Abs, Coalesce
 from django.utils import timezone
@@ -10,12 +10,14 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import DjangoModelPermissions, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from treasury.bank_import import BankImportError, import_bank_zip
 from treasury.models import BankTransaction, Charge, ChargeType, ExpenseType, House
 
 from .filters import (
@@ -152,7 +154,7 @@ class BankTransactionViewSet(mixins.UpdateModelMixin, viewsets.ReadOnlyModelView
     )
     serializer_class = BankTransactionSerializer
     permission_classes = (IsAuthenticated, CanChangeBankTransaction)
-    http_method_names = ("get", "patch", "head", "options")
+    http_method_names = ("get", "post", "patch", "head", "options")
     filter_backends = (DjangoFilterBackend, BankTransactionSearchFilter, OrderingFilter)
     ordering_fields = (
         "transaction_timestamp",
@@ -169,6 +171,40 @@ class BankTransactionViewSet(mixins.UpdateModelMixin, viewsets.ReadOnlyModelView
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)
         return queryset.order_by(*queryset.query.order_by, "pk")
+
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="import",
+        parser_classes=[MultiPartParser],
+    )
+    def import_zip(self, request):
+        if not request.user.has_perm("treasury.add_banktransaction"):
+            raise PermissionDenied(
+                "No tiene permiso para importar movimientos bancarios."
+            )
+        if set(request.data) != {"file"} or len(request.FILES.getlist("file")) != 1:
+            return Response(
+                {
+                    "code": "invalid_file",
+                    "detail": "Seleccione un único archivo ZIP en el campo file.",
+                    "errors": [],
+                },
+                status=400,
+            )
+        try:
+            result = import_bank_zip(request.FILES["file"])
+        except BankImportError as error:
+            return Response(
+                {
+                    "code": error.code,
+                    "detail": error.detail,
+                    "errors": error.errors,
+                    "inserted_count": 0,
+                },
+                status=error.status,
+            )
+        return Response(result)
 
     @action(detail=False)
     def summary(self, request):
@@ -201,6 +237,10 @@ class BankTransactionViewSet(mixins.UpdateModelMixin, viewsets.ReadOnlyModelView
                 **{key: str(value) for key, value in totals.items()},
                 "balance": str(sum(latest)),
                 "can_change": request.user.has_perm("treasury.change_banktransaction"),
+                "can_import": request.user.has_perm("treasury.add_banktransaction"),
+                "latest_transaction_timestamp": BankTransaction.objects.aggregate(
+                    latest=Max("transaction_timestamp")
+                )["latest"],
             }
         )
 
@@ -274,7 +314,9 @@ class ChargeTypeViewSet(viewsets.ModelViewSet):
             instance.delete()
         except ProtectedError:
             raise ValidationError(
-                {"detail": "No se puede eliminar un tipo que tiene registros asociados."}
+                {
+                    "detail": "No se puede eliminar un tipo que tiene registros asociados."
+                }
             ) from None
 
 
@@ -290,7 +332,9 @@ class ExpenseTypeViewSet(viewsets.ModelViewSet):
             instance.delete()
         except ProtectedError:
             raise ValidationError(
-                {"detail": "No se puede eliminar un tipo que tiene registros asociados."}
+                {
+                    "detail": "No se puede eliminar un tipo que tiene registros asociados."
+                }
             ) from None
 
 
