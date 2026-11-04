@@ -46,11 +46,11 @@ STATIC_URL = "/static/"
 STATIC_ROOT = env.path("STATIC_ROOT")
 MEDIA_ROOT = env.path("MEDIA_ROOT")
 
-EMAIL_BACKEND = env(
+email_backend = env(
     "EMAIL_BACKEND", default="django.core.mail.backends.smtp.EmailBackend"
 )
-MAILERS = {"default": {"BACKEND": EMAIL_BACKEND}}
-if EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend":
+MAILERS = {"default": {"BACKEND": email_backend}}
+if email_backend == "django.core.mail.backends.smtp.EmailBackend":
     MAILERS["default"]["OPTIONS"] = {
         "host": env("EMAIL_HOST"),
         "port": env.int("EMAIL_PORT"),
@@ -68,7 +68,7 @@ if EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend":
             "SMTP requiere servidor, credenciales y remitente reales."
         )
     SERVER_EMAIL = DEFAULT_FROM_EMAIL
-elif EMAIL_BACKEND != "django.core.mail.backends.dummy.EmailBackend":
+elif email_backend != "django.core.mail.backends.dummy.EmailBackend":
     raise ImproperlyConfigured("Seleccione el backend SMTP o dummy de Django.")
 
 LOGGING = {
