@@ -84,6 +84,84 @@ def seed_bank():
 
 
 class BankZipTests(SimpleTestCase):
+    def test_concepts_preserve_special_types_and_use_bank_direction(self):
+        cases = [
+            ("SPEI Recibido: prueba", "", "10.00", "CREDIT"),
+            ("Devolución de SPEI: prueba", "", "10.00", "CREDIT"),
+            ("SPEI Enviado: prueba", "10.00", "", "DEBIT"),
+            (
+                "Comisión por Transferencia - Envío ; (SPEI; Banca por Internet)",
+                "10.00",
+                "",
+                "COMMISSION",
+            ),
+            (
+                "Comisión por Administración - Renta (Banca por Internet) por (prueba)",
+                "10.00",
+                "",
+                "COMMISSION",
+            ),
+            (
+                "IVA Comisión por Transferencia - Envío ; (SPEI; Banca por Internet)",
+                "10.00",
+                "",
+                "COMMISSION_VAT",
+            ),
+            (
+                "IVA Comisión por Administración - Renta (Banca por Internet)",
+                "10.00",
+                "",
+                "COMMISSION_VAT",
+            ),
+            ("Pago de Servicios prueba", "10.00", "", "DEBIT"),
+            ("Otro abono", "", "10.00", "CREDIT"),
+            ("SPEI Recibido: prueba", "10.00", "", "DEBIT"),
+            (
+                "Comisión por Administración - Renta (Banca por Internet) por (prueba)",
+                "",
+                "10.00",
+                "CREDIT",
+            ),
+        ]
+        for concept, debit, credit, expected in cases:
+            with self.subTest(concept=concept, debit=debit, credit=credit):
+                record = read_bank_zip(
+                    bank_zip([bank_row(concept=concept, debit=debit, credit=credit)]),
+                    "canonical",
+                )[0]
+                self.assertEqual(record.line_type, expected)
+                self.assertEqual(str(record.amount), "10.00")
+                self.assertEqual(record.concept, concept)
+                self.assertIsNone(record.house_id)
+                self.assertIsNone(record.expense_type_id)
+
+    def test_unknown_concept_rejects_inconsistent_amounts(self):
+        for debit, credit in [
+            ("", ""),
+            ("1.00", "2.00"),
+            ("0.00", ""),
+            ("", "0.00"),
+            ("-1.00", ""),
+            ("", "NaN"),
+            ("1.001", ""),
+            ("0.00", "10.00"),
+        ]:
+            with (
+                self.subTest(debit=debit, credit=credit),
+                self.assertRaises(BankImportError) as error,
+            ):
+                read_bank_zip(
+                    bank_zip(
+                        [
+                            bank_row(
+                                concept="Pago de Servicios", debit=debit, credit=credit
+                            )
+                        ]
+                    ),
+                    "canonical",
+                )
+            self.assertEqual(error.exception.errors[0]["row"], 3)
+
     def test_reference_zip_and_timezone(self):
         with (Path(settings.BASE_DIR) / "resources/RCM1793293487232.zip").open(
             "rb"
@@ -104,7 +182,6 @@ class BankZipTests(SimpleTestCase):
             {1: "31-Feb-2026"},
             {2: "24:00:00"},
             {3: ""},
-            {4: "Otro abono"},
             {4: "SPEI Recibido: \x00"},
             {1: "31-Dec-9999"},
             {5: "1.00"},
@@ -186,6 +263,31 @@ class BankZipTests(SimpleTestCase):
 class BankImportTests(TestCase):
     def setUp(self):
         self.seed = seed_bank()
+
+    def test_unknown_concepts_idempotency_duplicates_and_atomicity(self):
+        rows = [
+            bank_row("100", concept="Pago de Servicios", debit="10.00", credit=""),
+            bank_row("101", concept="Otro abono"),
+        ]
+        self.assertEqual(import_bank_zip(bank_zip(rows))["inserted_count"], 2)
+        self.assertEqual(import_bank_zip(bank_zip(rows))["skipped_count"], 2)
+        before = list(BankTransaction.objects.order_by("pk").values())
+        for invalid_rows in [
+            [rows[0], rows[0]],
+            [
+                bank_row("001"),
+                bank_row("100", concept="Pago de Servicios", debit="11.00", credit=""),
+            ],
+            [
+                bank_row("001"),
+                bank_row("102", concept="Pago de Servicios", debit="10.00"),
+            ],
+        ]:
+            with self.subTest(rows=invalid_rows), self.assertRaises(BankImportError):
+                import_bank_zip(bank_zip(invalid_rows))
+            self.assertEqual(
+                list(BankTransaction.objects.order_by("pk").values()), before
+            )
 
     def test_new_idempotent_overlap_and_administration(self):
         self.assertEqual(

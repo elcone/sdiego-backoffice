@@ -201,10 +201,12 @@ def read_bank_zip(upload, bank_account):
             )
         ):
             line_type = BankTransaction.LineType.COMMISSION
-        elif debit and concept.startswith("SPEI Enviado:"):
-            line_type = BankTransaction.LineType.DEBIT
         else:
-            _invalid("Tipo de movimiento bancario desconocido.", row_number)
+            line_type = (
+                BankTransaction.LineType.DEBIT
+                if debit
+                else BankTransaction.LineType.CREDIT
+            )
         identity = (bank_account, receipt, line_type)
         if identity in identities:
             _invalid("Identidad bancaria duplicada dentro del archivo.", row_number)
