@@ -50,6 +50,7 @@ class SummaryTests(TestCase):
         self.assertEqual(data, {
             "income": "0.00", "expense": "0.00", "receivable": "0.00",
             "pending_expenses": "0.00", "top_houses": [], "top_expenses": [],
+            "unrecognized_income": "0.00",
         })
         self.assertEqual(self.client.post("/api/summary/", {}).status_code, 405)
         self.client.force_authenticate(None)
@@ -64,6 +65,24 @@ class SummaryTests(TestCase):
                   bank_account="002", balance="999.00")
         data = self.client.get("/api/bank-transaction/summary/").json()
         self.assertEqual(Decimal(data["balance"]), Decimal("149.75"))
+
+    def test_unrecognized_income_sums_all_history_regardless_of_review(self):
+        self.bank("10.25", timestamp="2025-01-01T12:00:00+00:00", is_reviewed=True)
+        self.bank("20.50", is_reviewed=False)
+        self.bank("30.75", timestamp="2099-01-01T12:00:00+00:00", is_reviewed=True)
+        self.bank("999.00", house=self.house)
+        for line_type in ("DEBIT", "COMMISSION", "COMMISSION_VAT"):
+            self.bank("100.00", line_type)
+        before = list(BankTransaction.objects.order_by("pk").values())
+        self.assertEqual(self.summary()["unrecognized_income"], "61.50")
+        self.assertEqual(list(BankTransaction.objects.order_by("pk").values()), before)
+
+    def test_unrecognized_income_is_zero_without_matching_transactions(self):
+        self.bank("999.00", house=self.house, is_reviewed=False)
+        self.bank("888.00", house=self.house, is_reviewed=True)
+        for line_type in ("DEBIT", "COMMISSION", "COMMISSION_VAT"):
+            self.bank("100.00", line_type)
+        self.assertEqual(self.summary()["unrecognized_income"], "0.00")
 
     def test_month_boundaries_use_configured_timezone_and_include_all_egress_types(self):
         self.bank("999.00", timestamp="2026-11-01T05:59:59+00:00")
@@ -131,12 +150,12 @@ class SummaryTests(TestCase):
         self.assertEqual(list(BankTransaction.objects.order_by("pk").values()), before_banks)
 
     def test_query_count_does_not_grow_with_houses_or_transactions(self):
-        with self.assertNumQueries(5):
+        with self.assertNumQueries(6):
             self.summary()
         for index in range(15):
             self.charge(House.objects.create(number=6200 + index), "100.00")
             self.bank("-1.00", "DEBIT")
-        with self.assertNumQueries(5):
+        with self.assertNumQueries(6):
             self.summary()
 
     def test_expense_ranking_groups_monthly_egresses_by_accumulated_magnitude(self):

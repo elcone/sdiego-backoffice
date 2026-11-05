@@ -365,6 +365,9 @@ class SummaryView(APIView):
             line_type__in=["DEBIT", "COMMISSION", "COMMISSION_VAT"]
         ).filter(Q(expense_type__isnull=True) | Q(is_reviewed=False))
         pending_total = pending.aggregate(total=Sum("amount", default=0))["total"]
+        unrecognized_income = BankTransaction.objects.filter(
+            line_type=BankTransaction.LineType.CREDIT, house__isnull=True
+        ).aggregate(total=Sum("amount", default=0))["total"]
         houses = HouseViewSet().get_queryset().filter(balance__gt=0)
         receivable = houses.aggregate(total=Sum("balance", default=0))["total"]
         top_houses = houses.order_by("-balance", "number", "pk").values(
@@ -381,6 +384,7 @@ class SummaryView(APIView):
                 "income": format(totals["income"], ".2f"),
                 "expense": format(totals["expense"], ".2f"),
                 "receivable": format(receivable, ".2f"),
+                "unrecognized_income": format(unrecognized_income, ".2f"),
                 "pending_expenses": format(pending_total, ".2f"),
                 "top_houses": [
                     {"number": row["number"], "balance": format(row["balance"], ".2f")}
