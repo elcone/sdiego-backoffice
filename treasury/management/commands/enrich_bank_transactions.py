@@ -4,7 +4,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 
 from core.models import Payment
-from treasury.bank_matching import build_trusted_evidence, identify_house
+from treasury.bank_matching import assign_house, build_trusted_evidence
 from treasury.bank_notes import update_automatic_notes
 from treasury.bank_parsing import parse_bank_concept
 from treasury.models import BankTransaction, House
@@ -107,23 +107,15 @@ class Command(BaseCommand):
             bank.metadata = metadata
         evidence = build_trusted_evidence(banks)
         for bank in banks:
-            if bank.line_type == "CREDIT":
-                matching = identify_house(bank.metadata, evidence)
-                bank.metadata["matching"] = matching
+            matching = assign_house(bank, houses, evidence)
+            if matching is not None:
                 if matching["ambiguous"]:
                     stats["ambiguous"] += 1
                     self.stdout.write(
                         f"Ambiguo: recibo={bank.bank_receipt}, fuente={matching['source']}, casas={matching['candidate_houses']}"
                     )
-                if bank.house_id is None and not matching["ambiguous"]:
-                    candidates = matching["candidate_houses"]
-                    if candidates and matching["source"] in {
-                        "concept",
-                        "origin_account",
-                    }:
-                        bank.house = houses[candidates[0]]
-                        bank.is_reviewed = False
-                        stats["assigned"] += 1
+                if originals[bank.pk][2] is None and bank.house_id is not None:
+                    stats["assigned"] += 1
                 if (
                     bank.house_id is None
                     and matching["source"] == "ordering_party"
@@ -136,8 +128,6 @@ class Command(BaseCommand):
                     )
                 if bank.house_id is None and not matching["candidate_houses"]:
                     stats["unmatched"] += 1
-            else:
-                bank.metadata.pop("matching", None)
             bank.description = update_automatic_notes(bank.description, bank.metadata)
             old_metadata, old_description, old_house_id, old_reviewed = originals[
                 bank.pk

@@ -82,7 +82,7 @@ class Charge(models.Model):
         ChargeType, verbose_name="tipo de cargo", on_delete=models.PROTECT
     )
     period = models.DateField("periodo")
-    due_date = models.DateField("fecha de vencimiento")
+    due_date = models.DateField("fecha de vencimiento", null=True, blank=True)
     amount = models.DecimalField("importe", max_digits=18, decimal_places=2)
     description = models.TextField("descripción", blank=True)
 

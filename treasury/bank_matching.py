@@ -52,3 +52,20 @@ def identify_house(metadata, evidence):
         "candidate_houses": candidates,
         "ambiguous": len(candidates) > 1,
     }
+
+
+def assign_house(bank, houses, evidence):
+    if bank.line_type != "CREDIT":
+        bank.metadata.pop("matching", None)
+        return None
+    matching = identify_house(bank.metadata, evidence)
+    bank.metadata["matching"] = matching
+    if (
+        bank.house_id is None
+        and not matching["ambiguous"]
+        and matching["candidate_houses"]
+        and matching["source"] in {"concept", "origin_account"}
+    ):
+        bank.house = houses[matching["candidate_houses"][0]]
+        bank.is_reviewed = False
+    return matching

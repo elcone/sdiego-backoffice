@@ -11,8 +11,12 @@ from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 
-from .models import BankTransaction
+from .bank_matching import assign_house, build_trusted_evidence
+from .bank_notes import update_automatic_notes
+from .bank_parsing import parse_bank_concept
+from .models import BankTransaction, House
 
 MAX_ZIP_SIZE = 2 * 1024 * 1024
 MAX_TXT_SIZE = 10 * 1024 * 1024
@@ -247,6 +251,7 @@ def import_bank_zip(upload):
     conflicts = []
     try:
         with transaction.atomic():
+            new_records = []
             for row_number, record in sorted(
                 enumerate(records, 3),
                 key=lambda item: (item[1].bank_receipt, item[1].line_type),
@@ -259,6 +264,7 @@ def import_bank_zip(upload):
                 )
                 if created:
                     inserted += 1
+                    new_records.append(existing)
                 else:
                     fields = [
                         field
@@ -284,6 +290,30 @@ def import_bank_zip(upload):
                     code="bank_conflict",
                     errors=conflicts,
                 )
+            if new_records:
+                houses = {house.number: house for house in House.objects.all()}
+                evidence = build_trusted_evidence(
+                    BankTransaction.objects.filter(
+                        Q(is_reviewed=True)
+                        | Q(metadata__assignment_source="historical_core"),
+                        line_type=BankTransaction.LineType.CREDIT,
+                        house__isnull=False,
+                    ).select_related("house")
+                )
+                for bank in new_records:
+                    bank.metadata.update(parse_bank_concept(bank.concept, houses))
+                    assign_house(bank, houses, evidence)
+                    bank.description = update_automatic_notes(
+                        bank.description, bank.metadata
+                    )
+                    bank.save(
+                        update_fields=[
+                            "metadata",
+                            "house",
+                            "is_reviewed",
+                            "description",
+                        ]
+                    )
     except IntegrityError:
         raise BankImportError(
             "La carga entró en conflicto con los datos existentes. No se insertó ningún movimiento.",

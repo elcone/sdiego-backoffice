@@ -98,7 +98,7 @@ class ChargeCatalogAPITests(TestCase):
             self.assertEqual(self.client.delete(detail).status_code, 405)
         before = list(Charge.objects.values())
         for field, value in [
-            ("period", "2026-11-02"), ("period", "invalid"),
+            ("period", "invalid"),
             ("due_date", "2026-02-30"), ("amount", "1.001"),
             ("amount", "10000000000000000.00"), ("amount", None),
             ("house", 999999), ("charge_type", 999999),
@@ -110,7 +110,26 @@ class ChargeCatalogAPITests(TestCase):
         self.assertEqual(list(Charge.objects.values()), before)
         self.assertEqual(self.client.get("/api/charge/").json()["count"], 3)
         self.client.force_authenticate(self.reader)
-        self.assertEqual(self.client.post("/api/charge/", self.payload).status_code, 403)
+        self.assertEqual(
+            self.client.post("/api/charge/", self.payload).status_code, 403
+        )
+
+    def test_individual_charge_accepts_any_date_and_optional_due_date(self):
+        for due_date in [{"due_date": None}, {}]:
+            payload = {
+                key: value for key, value in self.payload.items() if key != "due_date"
+            }
+            payload.update(period="2026-11-19", **due_date)
+            response = self.client.post("/api/charge/", payload, format="json")
+            self.assertEqual(response.status_code, 201, response.data)
+            charge = Charge.objects.get(pk=response.data["id"])
+            charge.full_clean()
+            self.assertEqual(charge.period.isoformat(), "2026-11-19")
+            self.assertIsNone(charge.due_date)
+            detail = self.client.get(f"/api/charge/{charge.pk}/")
+            self.assertIsNone(detail.data["due_date"])
+        response = self.client.get("/api/charge/")
+        self.assertTrue(all(row["due_date"] is None for row in response.data["results"]))
 
     def test_session_csrf_for_catalog_and_charge_writes(self):
         client = APIClient(enforce_csrf_checks=True)

@@ -100,6 +100,7 @@ class BulkChargeTests(TestCase):
         for field, value in [
             ("period", "2026-11-02"), ("period", "not-a-date"),
             ("due_date", "2026-02-30"), ("amount", "1.001"),
+            ("due_date", None),
             ("amount", "10000000000000000.00"), ("amount", None),
             ("charge_type", 999999), ("charge_type", None),
             ("houses", [self.houses[0].pk]), ("house", self.houses[0].pk),

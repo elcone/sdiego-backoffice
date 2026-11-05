@@ -23,6 +23,7 @@ from treasury.bank_import import (
     import_bank_zip,
     read_bank_zip,
 )
+from treasury.bank_parsing import parse_bank_concept
 from treasury.models import BankTransaction, ExpenseType, House
 
 
@@ -263,6 +264,97 @@ class BankZipTests(SimpleTestCase):
 class BankImportTests(TestCase):
     def setUp(self):
         self.seed = seed_bank()
+
+    def test_enrichment_assigns_only_new_credits_and_is_idempotent(self):
+        house = House.objects.create(number=6164)
+        other = House.objects.create(number=6165)
+        self.seed.house = house
+        self.seed.is_reviewed = True
+        self.seed.metadata = parse_bank_concept(
+            "Cuenta Ordenante: 000123 | Ordenante: Juan Perez |", [6164, 6165]
+        )
+        self.seed.save()
+        before = BankTransaction.objects.values().get(pk=self.seed.pk)
+        rows = [
+            bank_row("100", concept="Concepto del Pago: 6165 |"),
+            bank_row("101", concept="Cuenta Ordenante: 000123 |"),
+            bank_row("102", concept="Concepto del Pago: 6164 6165 |"),
+            bank_row("103", concept="Ordenante: Juan Perez |"),
+            bank_row(
+                "104", concept="Concepto del Pago: 6164 |", debit="10.00", credit=""
+            ),
+            bank_row("105", concept="Sin coincidencia"),
+        ]
+        self.assertEqual(import_bank_zip(bank_zip(rows))["inserted_count"], 6)
+        imported = {
+            bank.bank_receipt: bank
+            for bank in BankTransaction.objects.exclude(pk=self.seed.pk)
+        }
+        self.assertEqual(imported["100"].house_id, other.pk)
+        self.assertEqual(imported["101"].house_id, house.pk)
+        for receipt in ("102", "103", "104", "105"):
+            self.assertIsNone(imported[receipt].house_id)
+        self.assertTrue(imported["102"].metadata["matching"]["ambiguous"])
+        self.assertEqual(
+            imported["103"].metadata["matching"]["source"], "ordering_party"
+        )
+        self.assertNotIn("matching", imported["104"].metadata)
+        self.assertTrue(all(not bank.is_reviewed for bank in imported.values()))
+        self.assertEqual(BankTransaction.objects.values().get(pk=self.seed.pk), before)
+        snapshot = list(BankTransaction.objects.order_by("pk").values())
+        self.assertEqual(import_bank_zip(bank_zip(rows))["skipped_count"], 6)
+        self.assertEqual(
+            list(BankTransaction.objects.order_by("pk").values()), snapshot
+        )
+
+    def test_ambiguous_trusted_account_does_not_assign(self):
+        for number in (6164, 6165):
+            BankTransaction.objects.create(
+                bank_account=self.seed.bank_account,
+                bank_receipt=str(number),
+                line_type="CREDIT",
+                transaction_timestamp=self.seed.transaction_timestamp,
+                amount="10.00",
+                balance="100.00",
+                concept="Cuenta Ordenante: 000123 |",
+                house=House.objects.create(number=number),
+                is_reviewed=True,
+                metadata={"origin_account": "000123"},
+            )
+        import_bank_zip(bank_zip([bank_row(concept="Cuenta Ordenante: 000123 |")]))
+        bank = BankTransaction.objects.get(bank_receipt="100")
+        self.assertIsNone(bank.house_id)
+        self.assertTrue(bank.metadata["matching"]["ambiguous"])
+
+    def test_enrichment_failure_rolls_back_import(self):
+        before = list(BankTransaction.objects.values())
+        with (
+            patch(
+                "treasury.bank_import.assign_house", side_effect=RuntimeError("Error")
+            ),
+            self.assertRaises(RuntimeError),
+        ):
+            import_bank_zip(bank_zip())
+        self.assertEqual(list(BankTransaction.objects.values()), before)
+
+    def test_automatic_assignments_do_not_become_trusted_evidence(self):
+        House.objects.create(number=6164)
+        import_bank_zip(
+            bank_zip(
+                [
+                    bank_row(
+                        "100",
+                        concept="Concepto del Pago: 6164 | Cuenta Ordenante: 000123 |",
+                    ),
+                    bank_row("101", concept="Cuenta Ordenante: 000123 |"),
+                ]
+            )
+        )
+        self.assertIsNone(BankTransaction.objects.get(bank_receipt="101").house_id)
+        import_bank_zip(
+            bank_zip([bank_row("102", concept="Cuenta Ordenante: 000123 |")])
+        )
+        self.assertIsNone(BankTransaction.objects.get(bank_receipt="102").house_id)
 
     def test_unknown_concepts_idempotency_duplicates_and_atomicity(self):
         rows = [

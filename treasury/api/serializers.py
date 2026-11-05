@@ -44,17 +44,19 @@ class ChargeSerializer(serializers.ModelSerializer):
             "description",
         )
 
+
+class BulkChargeSerializer(ChargeSerializer):
+    due_date = serializers.DateField()
+
+    class Meta(ChargeSerializer.Meta):
+        fields = ("charge_type", "period", "due_date", "amount", "description")
+
     def validate_period(self, value):
         if value.day != 1:
             raise serializers.ValidationError(
                 "El periodo debe ser el primer día del mes."
             )
         return value
-
-
-class BulkChargeSerializer(ChargeSerializer):
-    class Meta(ChargeSerializer.Meta):
-        fields = ("charge_type", "period", "due_date", "amount", "description")
 
     def to_internal_value(self, data):
         if isinstance(data, Mapping):
