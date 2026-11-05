@@ -366,7 +366,7 @@ class SummaryView(APIView):
         ).filter(Q(expense_type__isnull=True) | Q(is_reviewed=False))
         pending_total = pending.aggregate(total=Sum("amount", default=0))["total"]
         unrecognized_income = BankTransaction.objects.filter(
-            line_type=BankTransaction.LineType.CREDIT, house__isnull=True
+            line_type=BankTransaction.LineType.CREDIT, house__isnull=True, is_reviewed=False
         ).aggregate(total=Sum("amount", default=0))["total"]
         houses = HouseViewSet().get_queryset().filter(balance__gt=0)
         receivable = houses.aggregate(total=Sum("balance", default=0))["total"]
