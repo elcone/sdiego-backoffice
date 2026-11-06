@@ -384,7 +384,12 @@ class BankImportTests(TestCase):
     def test_new_idempotent_overlap_and_administration(self):
         self.assertEqual(
             import_bank_zip(bank_zip()),
-            {"found_count": 1, "inserted_count": 1, "skipped_count": 0},
+            {
+                "found_count": 1,
+                "inserted_count": 1,
+                "skipped_count": 0,
+                "updated_count": 0,
+            },
         )
         bank = BankTransaction.objects.get(bank_receipt="100")
         bank.house = House.objects.create(number=6101)
@@ -398,9 +403,76 @@ class BankImportTests(TestCase):
         self.assertEqual(BankTransaction.objects.values().get(pk=bank.pk), before)
         result = import_bank_zip(bank_zip([bank_row(), bank_row("101")]))
         self.assertEqual(
-            result, {"found_count": 2, "inserted_count": 1, "skipped_count": 1}
+            result,
+            {
+                "found_count": 2,
+                "inserted_count": 1,
+                "skipped_count": 1,
+                "updated_count": 0,
+            },
         )
         self.assertEqual(BankTransaction.objects.count(), 3)
+
+    def test_concept_update_preserves_administration_and_is_idempotent(self):
+        import_bank_zip(bank_zip())
+        bank = BankTransaction.objects.get(bank_receipt="100")
+        bank.house = House.objects.create(number=6101)
+        bank.expense_type = ExpenseType.objects.create(name="Prueba")
+        bank.description = "Nota manual"
+        bank.is_reviewed = True
+        bank.metadata = {"manual": True}
+        bank.save()
+        before = BankTransaction.objects.values().get(pk=bank.pk)
+        rows = [bank_row(concept="Concepto corregido"), bank_row("101")]
+        result = import_bank_zip(bank_zip(rows))
+        self.assertEqual(
+            result,
+            {
+                "found_count": 2,
+                "inserted_count": 1,
+                "updated_count": 1,
+                "skipped_count": 0,
+            },
+        )
+        self.assertEqual(
+            BankTransaction.objects.values().get(pk=bank.pk),
+            {**before, "concept": "Concepto corregido"},
+        )
+        snapshot = list(BankTransaction.objects.order_by("pk").values())
+        result = import_bank_zip(bank_zip(rows))
+        self.assertEqual(result["updated_count"], 0)
+        self.assertEqual(result["skipped_count"], 2)
+        self.assertEqual(
+            list(BankTransaction.objects.order_by("pk").values()), snapshot
+        )
+
+    def test_concept_updates_roll_back_on_conflict_or_enrichment_failure(self):
+        import_bank_zip(bank_zip())
+        before = list(BankTransaction.objects.order_by("pk").values())
+        with self.assertRaises(BankImportError):
+            import_bank_zip(
+                bank_zip(
+                    [
+                        bank_row(concept="Corregido"),
+                        bank_row("101"),
+                        bank_row("seed", concept="Distinto", credit="99.00"),
+                    ]
+                )
+            )
+        self.assertEqual(list(BankTransaction.objects.order_by("pk").values()), before)
+        with (
+            patch("treasury.bank_import.assign_house", side_effect=RuntimeError),
+            self.assertRaises(RuntimeError),
+        ):
+            import_bank_zip(
+                bank_zip(
+                    [
+                        bank_row(concept="Corregido"),
+                        bank_row("101"),
+                    ]
+                )
+            )
+        self.assertEqual(list(BankTransaction.objects.order_by("pk").values()), before)
 
     def test_each_bank_difference_conflicts_and_rolls_back(self):
         import_bank_zip(bank_zip())
@@ -409,7 +481,7 @@ class BankImportTests(TestCase):
             {1: "27-Oct-2026"},
             {6: "11.00"},
             {7: "101.00"},
-            {4: "SPEI Recibido: diferente"},
+            {2: "22:59:59"},
         ]:
             row = bank_row()
             for key, value in changes.items():
@@ -448,7 +520,12 @@ class BankImportTests(TestCase):
         ) as upload:
             self.assertEqual(
                 import_bank_zip(upload),
-                {"found_count": 122, "inserted_count": 0, "skipped_count": 122},
+                {
+                    "found_count": 122,
+                    "inserted_count": 0,
+                    "skipped_count": 122,
+                    "updated_count": 0,
+                },
             )
         self.assertEqual(list(BankTransaction.objects.order_by("pk").values()), before)
 

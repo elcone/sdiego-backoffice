@@ -247,7 +247,7 @@ def canonical_bank_account():
 
 def import_bank_zip(upload):
     records = read_bank_zip(upload, canonical_bank_account())
-    inserted = skipped = 0
+    inserted = skipped = updated = 0
     conflicts = []
     try:
         with transaction.atomic():
@@ -266,10 +266,14 @@ def import_bank_zip(upload):
                     inserted += 1
                     new_records.append(existing)
                 else:
+                    existing = BankTransaction.objects.select_for_update().get(
+                        pk=existing.pk
+                    )
                     fields = [
                         field
                         for field in BANK_FIELDS
-                        if getattr(existing, field) != getattr(record, field)
+                        if field != "concept"
+                        and getattr(existing, field) != getattr(record, field)
                     ]
                     if fields:
                         conflicts.append(
@@ -281,6 +285,10 @@ def import_bank_zip(upload):
                                 ],
                             }
                         )
+                    elif existing.concept != record.concept:
+                        existing.concept = record.concept
+                        existing.save(update_fields=["concept"])
+                        updated += 1
                     else:
                         skipped += 1
             if conflicts:
@@ -324,4 +332,5 @@ def import_bank_zip(upload):
         "found_count": len(records),
         "inserted_count": inserted,
         "skipped_count": skipped,
+        "updated_count": updated,
     }
