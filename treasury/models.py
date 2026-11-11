@@ -14,6 +14,7 @@ class House(models.Model):
 
 class ChargeType(models.Model):
     name = models.CharField("nombre", max_length=200)
+    is_active = models.BooleanField("activo", default=True)
 
     class Meta:
         verbose_name = "tipo de cargo"

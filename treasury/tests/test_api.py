@@ -109,7 +109,7 @@ class TreasuryAPITests(TestCase):
                     "description",
                 },
             ),
-            ("charge-type", self.charge_type, {"id", "name"}),
+            ("charge-type", self.charge_type, {"id", "name", "is_active"}),
             ("expense-type", self.expense_type, {"id", "name"}),
         ]:
             with self.subTest(endpoint=endpoint):

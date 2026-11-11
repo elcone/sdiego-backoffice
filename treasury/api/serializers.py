@@ -22,7 +22,7 @@ class HouseSerializer(serializers.ModelSerializer):
 class ChargeTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChargeType
-        fields = ("id", "name")
+        fields = ("id", "name", "is_active")
 
 
 class ExpenseTypeSerializer(serializers.ModelSerializer):
@@ -43,6 +43,11 @@ class ChargeSerializer(serializers.ModelSerializer):
             "amount",
             "description",
         )
+
+    def validate_charge_type(self, value):
+        if not value.is_active:
+            raise serializers.ValidationError("Selecciona un tipo de cargo activo.")
+        return value
 
 
 class BulkChargeSerializer(ChargeSerializer):

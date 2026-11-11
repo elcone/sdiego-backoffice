@@ -36,6 +36,64 @@ class ChargeCatalogAPITests(TestCase):
             "amount": "-12.35", "description": "Ajuste",
         }
 
+    def test_charge_type_api_defaults_and_explicit_state(self):
+        self.assertTrue(ChargeType.objects.get(pk=self.kind.pk).is_active)
+        for data, expected in [
+            ({"name": "Activo por defecto"}, True),
+            ({"name": "Inactivo", "is_active": False}, False),
+        ]:
+            response = self.client.post("/api/charge-type/", data, format="json")
+            self.assertEqual(response.status_code, 201)
+            self.assertIs(response.json()["is_active"], expected)
+            self.assertIs(
+                ChargeType.objects.get(pk=response.json()["id"]).is_active, expected
+            )
+
+    def test_inactive_charge_type_preserves_history_and_blocks_new_charges(self):
+        charge = self.client.post("/api/charge/", self.payload, format="json")
+        self.assertEqual(charge.status_code, 201)
+        before = list(Charge.objects.values())
+        detail = f"/api/charge-type/{self.kind.pk}/"
+        response = self.client.patch(detail, {"is_active": False}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.json()["is_active"], False)
+        self.assertFalse(ChargeType.objects.get(pk=self.kind.pk).is_active)
+        catalog = self.client.get("/api/charge-type/").json()["results"]
+        self.assertIn(
+            {"id": self.kind.pk, "name": self.kind.name, "is_active": False}, catalog
+        )
+        bulk = {key: value for key, value in self.payload.items() if key != "house"}
+        for url, payload in [
+            ("/api/charge/", self.payload),
+            ("/api/charge/generate-all/", bulk),
+        ]:
+            with self.subTest(url=url):
+                response = self.client.post(url, payload, format="json")
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("charge_type", response.json())
+        self.assertEqual(list(Charge.objects.values()), before)
+        self.assertEqual(
+            self.client.get(f"/api/charge/{charge.json()['id']}/").json()["charge_type"],
+            self.kind.pk,
+        )
+        self.assertEqual(
+            self.client.get("/api/charge/").json()["results"][0]["charge_type"],
+            self.kind.pk,
+        )
+        self.assertEqual(self.client.delete(detail).status_code, 400)
+
+        response = self.client.patch(detail, {"is_active": True}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.json()["is_active"], True)
+        self.assertEqual(
+            self.client.post("/api/charge/", self.payload, format="json").status_code,
+            201,
+        )
+        House.objects.create(number=6102)
+        response = self.client.post("/api/charge/generate-all/", bulk, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["created_count"], 1)
+
     def test_catalog_crud_and_permissions(self):
         for endpoint, model in [
             ("charge-type", ChargeType), ("expense-type", ExpenseType),
